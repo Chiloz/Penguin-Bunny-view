@@ -15,6 +15,7 @@ import { WatchList } from './WatchList';
 import { SharedWatchLists } from './SharedWatchLists';
 import { MiniChatDrawer } from './MiniChatDrawer';
 import { IncomingInvitesBanner } from './IncomingInvitesBanner';
+import { InstallAppModal } from './InstallAppModal';
 import { 
   User as UserIcon, 
   Palette, 
@@ -41,7 +42,9 @@ import {
   Image as ImageIcon,
   Trash2,
   X,
-  MessageSquare
+  MessageSquare,
+  Smartphone,
+  Download
 } from 'lucide-react';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase';
@@ -91,6 +94,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
   const [selectedChatFriendId, setSelectedChatFriendId] = useState<string | null>(null);
   const [totalUnreadCount, setTotalUnreadCount] = useState<number>(0);
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState<boolean>(false);
 
   // Listen for total unread direct messages / invites
   useEffect(() => {
@@ -396,6 +400,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           <div className="flex flex-wrap gap-2 justify-center">
+            <button
+              onClick={() => setIsInstallModalOpen(true)}
+              className="px-3.5 py-2 text-xs font-bold text-sky-200 hover:text-white bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 border border-sky-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-sky-500/10 hover:scale-105 active:scale-95"
+              title="Install Penguin View on Phone screen, Windows taskbar, or Mac dock"
+            >
+              <Smartphone className="w-3.5 h-3.5 text-sky-400" />
+              <span>Install App</span>
+            </button>
+
             <button
               onClick={handleCopyCode}
               className="px-3.5 py-2 text-xs font-semibold text-slate-200 cursor-pointer liquid-glass-button flex items-center gap-2"
@@ -1024,6 +1037,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
         isOpen={isChatOpen}
         onClose={() => setIsChatOpen(false)}
         initialSelectedFriendId={selectedChatFriendId}
+      />
+
+      {/* Install App Modal */}
+      <InstallAppModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
       />
 
       {/* Footer Credentials */}

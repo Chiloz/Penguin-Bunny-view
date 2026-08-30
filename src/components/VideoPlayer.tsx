@@ -7,6 +7,7 @@ import {
   collection, 
   addDoc, 
   query, 
+  where,
   orderBy, 
   limit, 
   serverTimestamp
@@ -14,6 +15,7 @@ import {
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Room, Reaction, UserProfile, RoomParticipant } from '../types';
 import { LiquidGlassCard } from './LiquidGlassCard';
+import { ShareInviteModal } from './ShareInviteModal';
 import { 
   Play, 
   Pause, 
@@ -35,7 +37,9 @@ import {
   ListVideo,
   SkipForward,
   SkipBack,
-  AlertCircle
+  AlertCircle,
+  Tv,
+  ScreenShare
 } from 'lucide-react';
 
 interface VideoPlayerProps {
@@ -88,6 +92,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [loading, setLoading] = useState<boolean>(true);
   const [roomError, setRoomError] = useState<string>('');
 
+  // Friends for Share Modal
+  const [friendsProfiles, setFriendsProfiles] = useState<UserProfile[]>([]);
+  const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
+
   // Player controls state
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -97,8 +105,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isHudVisible, setIsHudVisible] = useState<boolean>(true);
   const [isCommentsMenuOpen, setIsCommentsMenuOpen] = useState<boolean>(false);
   
-  // Custom screen mode: Half Screen vs Full screen (CSS mock fullscreen)
+  // Screen mode: Half Screen vs Container Full View vs True Native Fullscreen (Hides browser tabs)
   const [isHalfScreen, setIsHalfScreen] = useState<boolean>(true);
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState<boolean>(false);
   
   // Floating reactions state
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
@@ -106,6 +115,128 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   // HUD timer
   const hudTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Subscribe to friends profiles for sharing
+  useEffect(() => {
+    if (currentUser.friends && currentUser.friends.length > 0) {
+      const q = query(
+        collection(db, 'users'),
+        where('uid', 'in', currentUser.friends)
+      );
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const profiles: UserProfile[] = [];
+        snapshot.forEach((docSnap) => {
+          profiles.push(docSnap.data() as UserProfile);
+        });
+        setFriendsProfiles(profiles);
+      }, (err) => {
+        console.error("Error fetching friends profiles in player:", err);
+      });
+
+      return () => unsubscribe();
+    } else {
+      setFriendsProfiles([]);
+    }
+  }, [currentUser.friends]);
+
+  // Native Fullscreen change listener
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFull = !!(
+        document.fullscreenElement || 
+        (document as any).webkitFullscreenElement || 
+        (document as any).mozFullScreenElement || 
+        (document as any).msFullscreenElement
+      );
+      setIsNativeFullscreen(isFull);
+      if (isFull) {
+        setIsHalfScreen(false);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
+  // Keyboard shortcut handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        toggleNativeFullscreen();
+      } else if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        togglePlayPause();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        skip(-5);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        skip(5);
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        toggleMute();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  });
+
+  // Toggle true Native Fullscreen API (Hides browser tabs, toolbars, and desktop UI)
+  const toggleNativeFullscreen = async () => {
+    try {
+      const isCurrentlyFullscreen = !!(
+        document.fullscreenElement || 
+        (document as any).webkitFullscreenElement || 
+        (document as any).mozFullScreenElement || 
+        (document as any).msFullscreenElement
+      );
+
+      if (!isCurrentlyFullscreen) {
+        const elem = containerRef.current || document.documentElement;
+        if (elem.requestFullscreen) {
+          await elem.requestFullscreen();
+        } else if ((elem as any).webkitRequestFullscreen) {
+          await (elem as any).webkitRequestFullscreen();
+        } else if ((elem as any).mozRequestFullScreen) {
+          await (elem as any).mozRequestFullScreen();
+        } else if ((elem as any).msRequestFullscreen) {
+          await (elem as any).msRequestFullscreen();
+        }
+        setIsHalfScreen(false);
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if ((document as any).webkitExitFullscreen) {
+          await (document as any).webkitExitFullscreen();
+        } else if ((document as any).mozCancelFullScreen) {
+          await (document as any).mozCancelFullScreen();
+        } else if ((document as any).msExitFullscreen) {
+          await (document as any).msExitFullscreen();
+        }
+      }
+    } catch (err) {
+      console.warn("Fullscreen toggle notice:", err);
+      // Fallback to container full view if permission rejected in certain sandboxes
+      setIsHalfScreen(prev => !prev);
+    }
+  };
 
   // Clean up object URLs on unmount or URL change to prevent browser leaks
   useEffect(() => {
@@ -830,20 +961,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
               <div className="flex gap-2">
                 <button
-                  onClick={copyRoomLink}
-                  className="p-2 bg-white/10 hover:bg-white/20 border border-white/10 rounded-xl text-white transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold backdrop-blur-md"
+                  onClick={() => setIsShareModalOpen(true)}
+                  className="p-2 bg-gradient-to-r from-sky-500/30 to-indigo-500/30 hover:from-sky-500/40 hover:to-indigo-500/40 border border-sky-400/40 rounded-xl text-white transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold backdrop-blur-md shadow-lg shadow-sky-500/10"
+                  title="Invite friends from your friend list or copy link"
                 >
-                  {copiedLink ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-400" />
-                      <span className="hidden sm:inline">Copied!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Share2 className="w-4 h-4 text-sky-400" />
-                      <span className="hidden sm:inline">Share Link</span>
-                    </>
-                  )}
+                  <Share2 className="w-4 h-4 text-sky-300" />
+                  <span className="hidden sm:inline">Invite & Share</span>
                 </button>
               </div>
             </div>
@@ -1006,7 +1129,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     />
                   </div>
 
-                  {/* Right Side: Options & Screens */}
+                  {/* Right Side: Options & Fullscreen controls */}
                   <div className="flex items-center gap-2">
                     <button
                       onClick={forceResync}
@@ -1019,17 +1142,37 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
                     <button
                       onClick={() => setIsHalfScreen(!isHalfScreen)}
-                      className="p-2 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 text-xs text-white flex items-center gap-1 cursor-pointer"
+                      className="p-2 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 text-xs text-slate-200 flex items-center gap-1 cursor-pointer"
+                      title="Toggle Theater / Half view layout"
                     >
                       {isHalfScreen ? (
                         <>
-                          <Maximize className="w-3.5 h-3.5 text-indigo-300" />
-                          <span className="hidden sm:inline">Full View</span>
+                          <Tv className="w-3.5 h-3.5 text-indigo-300" />
+                          <span className="hidden sm:inline">Theater View</span>
                         </>
                       ) : (
                         <>
                           <Minimize className="w-3.5 h-3.5 text-indigo-300" />
                           <span className="hidden sm:inline">Half View</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* True Native Fullscreen Button (Hides browser tabs & taskbar) */}
+                    <button
+                      onClick={toggleNativeFullscreen}
+                      className="p-2 bg-gradient-to-r from-indigo-600 to-sky-500 hover:from-indigo-500 hover:to-sky-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-sky-500/20"
+                      title="Full Screen Mode (Hides all browser tabs & menus for cinema immersion - Key: F)"
+                    >
+                      {isNativeFullscreen ? (
+                        <>
+                          <Minimize className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Exit Full Screen</span>
+                        </>
+                      ) : (
+                        <>
+                          <Maximize className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Full Screen</span>
                         </>
                       )}
                     </button>
@@ -1153,19 +1296,28 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 </div>
               </div>
 
-              {/* Bottom Session Details */}
-              <div className="border-t border-white/10 pt-3">
+              {/* Bottom Session Details & Invite Friends Trigger */}
+              <div className="border-t border-white/10 pt-3 space-y-2">
                 <div className="p-3 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-between">
                   <div>
-                    <p className="text-[10px] font-mono text-slate-500 uppercase">INVITE CODE</p>
+                    <p className="text-[10px] font-mono text-slate-500 uppercase">ROOM CODE</p>
                     <p className="text-xs font-mono text-white font-bold mt-0.5">{roomId.slice(0, 8).toUpperCase()}</p>
                   </div>
-                  <button
-                    onClick={copyRoomLink}
-                    className="p-2 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 rounded-xl text-xs transition-colors cursor-pointer"
-                  >
-                    Copy Link
-                  </button>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={copyRoomLink}
+                      className="p-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl text-xs transition-colors cursor-pointer"
+                      title="Quick copy link"
+                    >
+                      {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Share2 className="w-3.5 h-3.5" />}
+                    </button>
+                    <button
+                      onClick={() => setIsShareModalOpen(true)}
+                      className="px-3 py-1.5 bg-gradient-to-r from-sky-400 to-indigo-500 hover:from-sky-300 hover:to-indigo-400 text-white font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer"
+                    >
+                      Invite Friends
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1174,6 +1326,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         )}
 
       </div>
+
+      {/* Share & Invite Friends Modal */}
+      <ShareInviteModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        roomId={roomId}
+        videoTitle={room?.currentEpisodeName || room?.videoName || videoFile?.name || 'Sync Movie Watch'}
+        currentUser={currentUser}
+        friendsProfiles={friendsProfiles}
+      />
     </div>
   );
 };

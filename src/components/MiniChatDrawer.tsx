@@ -53,6 +53,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
   const [textInput, setTextInput] = useState('');
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [inviteVideoTitle, setInviteVideoTitle] = useState(activeRoomVideoName || 'Sync Movie Watch');
+  const [inviteCustomNote, setInviteCustomNote] = useState('Come watch with me! 🍿');
   const [customRoomId, setCustomRoomId] = useState(activeRoomId || '');
   const [isSendingInvite, setIsSendingInvite] = useState(false);
   const [unreadCounts, setUnreadCounts] = useState<{ [friendUid: string]: number }>({});
@@ -174,6 +175,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
     try {
       const finalRoomId = customRoomId.trim() || activeRoomId || `room-${Date.now().toString(36)}`;
       const videoName = inviteVideoTitle.trim() || 'Sync Movie Session';
+      const customText = inviteCustomNote.trim() || `🍿 Hey! I'm inviting you to watch "${videoName}" together in a sync room!`;
 
       // 1. Post to direct_messages
       await addDoc(collection(db, 'direct_messages'), {
@@ -181,7 +183,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
         senderName: currentUser.name,
         senderPic: currentUser.profilePic || '',
         recipientId: selectedFriend.uid,
-        text: `🍿 Hey! I'm inviting you to watch "${videoName}" together in a sync room!`,
+        text: customText,
         isInvite: true,
         roomId: finalRoomId,
         roomVideoName: videoName,
@@ -441,6 +443,20 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
                   className="px-3 py-2 text-xs text-slate-100 liquid-glass-input w-full"
                   value={inviteVideoTitle}
                   onChange={(e) => setInviteVideoTitle(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                  Short Note / Text to Friend
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Come watch with me! 🍿"
+                  className="px-3 py-2 text-xs text-slate-100 liquid-glass-input w-full"
+                  value={inviteCustomNote}
+                  onChange={(e) => setInviteCustomNote(e.target.value)}
+                  maxLength={100}
                 />
               </div>
 

@@ -1,22 +1,44 @@
 {
-  "name": "Penguin View",
+  "name": "Penguin View - Video Sync & Social Watch",
   "short_name": "Penguin View",
-  "description": "Global movie sync and watch lists with real-time liquid glass aesthetics.",
+  "description": "Global movie sync, anime folder playlist engine, and real-time social watch parties.",
   "start_url": "/",
+  "id": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "background_color": "#090d16",
   "theme_color": "#090d16",
   "orientation": "any",
+  "categories": ["entertainment", "video", "social"],
   "icons": [
     {
       "src": "/penguin_logo.jpg",
       "sizes": "192x192",
-      "type": "image/jpeg"
+      "type": "image/jpeg",
+      "purpose": "any maskable"
     },
     {
       "src": "/penguin_logo.jpg",
       "sizes": "512x512",
-      "type": "image/jpeg"
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Create Watch Room",
+      "short_name": "Watch Room",
+      "description": "Start a real-time synchronized watch party",
+      "url": "/?action=create",
+      "icons": [{ "src": "/penguin_logo.jpg", "sizes": "192x192" }]
+    },
+    {
+      "name": "My Watchlist",
+      "short_name": "Watchlist",
+      "description": "View your saved movies and anime series",
+      "url": "/?tab=watchlist",
+      "icons": [{ "src": "/penguin_logo.jpg", "sizes": "192x192" }]
     }
   ]
 }
