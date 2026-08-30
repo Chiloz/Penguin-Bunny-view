@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // User Profile Rules
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasAll(['uid', 'name', 'email', 'friendCode'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.name is string && request.resource.data.name.size() <= 100
+        && request.resource.data.email is string && request.resource.data.email.size() <= 200
+        && request.resource.data.friendCode is string && request.resource.data.friendCode.size() <= 10;
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.name is string && request.resource.data.name.size() <= 100
+        && request.resource.data.friendCode == resource.data.friendCode;
+    }
+
+    // Watchlist Rules
+    match /watchlist/{itemId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.title is string && request.resource.data.title.size() <= 200;
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.title is string && request.resource.data.title.size() <= 200;
+      allow delete: if isSignedIn()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // Shared List Rules (Collaborative Watchlists with Friends)
+    match /shared_lists/{listId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.title is string && request.resource.data.title.size() <= 200;
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+
+      match /items/{itemId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn()
+          && request.resource.data.title is string && request.resource.data.title.size() <= 200;
+        allow update: if isSignedIn();
+        allow delete: if isSignedIn();
+      }
+    }
+
+    // Room Rules
+    match /rooms/{roomId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.roomId == roomId
+        && request.resource.data.hostId == request.auth.uid
+        && request.resource.data.hostName is string && request.resource.data.hostName.size() <= 100;
+      allow update: if isSignedIn()
+        && (
+          resource.data.hostId == request.auth.uid ||
+          request.resource.data.hostId == resource.data.hostId
+        );
+      allow delete: if isSignedIn() && resource.data.hostId == request.auth.uid;
+
+      // Reactions Subcollection Rules
+      match /reactions/{reactionId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn()
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.emoji is string && request.resource.data.emoji.size() <= 10;
+      }
+    }
+
+    // Direct Messages Rules (Mini Chat & Invites)
+    match /direct_messages/{messageId} {
+      allow read: if isSignedIn() && (
+        resource.data.senderId == request.auth.uid ||
+        resource.data.recipientId == request.auth.uid
+      );
+      allow create: if isSignedIn()
+        && request.resource.data.senderId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
+    }
+
+    // Room Invites Rules
+    match /invites/{inviteId} {
+      allow read: if isSignedIn() && (
+        resource.data.senderId == request.auth.uid ||
+        resource.data.recipientId == request.auth.uid
+      );
+      allow create: if isSignedIn()
+        && request.resource.data.senderId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        resource.data.senderId == request.auth.uid ||
+        resource.data.recipientId == request.auth.uid
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.senderId == request.auth.uid ||
+        resource.data.recipientId == request.auth.uid
+      );
+    }
+  }
+}

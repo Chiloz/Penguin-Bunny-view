@@ -1,0 +1,170 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User profile with customizable avatar and theme, plus friends list",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "profilePic": { "type": "string" },
+        "themeColor": { "type": "string" },
+        "friendCode": { "type": "string" },
+        "friends": { "type": "array" }
+      },
+      "required": ["uid", "name", "email", "friendCode"]
+    },
+    "WatchListItem": {
+      "title": "Watch List Item",
+      "description": "A movie or video that a user wants to watch next with optional rating and review",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "addedAt": { "type": "string" },
+        "isWatched": { "type": "boolean" },
+        "ratingType": { "type": "string" },
+        "ratingValue": { "type": "number" },
+        "reviewComment": { "type": "string" }
+      },
+      "required": ["id", "userId", "title", "isWatched"]
+    },
+    "SharedList": {
+      "title": "Collaborative Shared Watchlist",
+      "description": "A shared watch list created between friends",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "createdById": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "members": { "type": "array" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["id", "title", "createdById", "createdByName", "members"]
+    },
+    "SharedWatchListItem": {
+      "title": "Shared Watch List Item",
+      "description": "A movie item in a collaborative shared watchlist",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "listId": { "type": "string" },
+        "title": { "type": "string" },
+        "addedByUid": { "type": "string" },
+        "addedByName": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "isWatched": { "type": "boolean" },
+        "ratingType": { "type": "string" },
+        "ratingValue": { "type": "number" },
+        "reviewComment": { "type": "string" },
+        "reviewedByUid": { "type": "string" },
+        "reviewedByName": { "type": "string" },
+        "addedAt": { "type": "object" }
+      },
+      "required": ["id", "listId", "title", "addedByUid", "isWatched"]
+    },
+    "Room": {
+      "title": "Sync Room",
+      "description": "A real-time playback synchronization room for movies",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "hostId": { "type": "string" },
+        "hostName": { "type": "string" },
+        "videoName": { "type": "string" },
+        "isPlaying": { "type": "boolean" },
+        "currentTime": { "type": "number" },
+        "lastUpdatedAt": { "type": "object" },
+        "senderId": { "type": "string" }
+      },
+      "required": ["roomId", "hostId", "hostName", "isPlaying", "currentTime", "senderId"]
+    },
+    "Reaction": {
+      "title": "Reaction",
+      "description": "Real-time floating reaction emoji triggered by users inside a room",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "roomId": { "type": "string" },
+        "emoji": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "timestamp": { "type": "object" }
+      },
+      "required": ["id", "roomId", "emoji", "senderId", "senderName"]
+    },
+    "DirectMessage": {
+      "title": "Direct Message",
+      "description": "Mini chat message or room invite between friends",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderPic": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "text": { "type": "string" },
+        "isInvite": { "type": "boolean" },
+        "roomId": { "type": "string" },
+        "roomVideoName": { "type": "string" },
+        "timestamp": { "type": "object" }
+      },
+      "required": ["id", "senderId", "senderName", "recipientId"]
+    },
+    "RoomInvite": {
+      "title": "Room Invite",
+      "description": "Direct room invite sent to a friend",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderPic": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "roomId": { "type": "string" },
+        "videoName": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "object" }
+      },
+      "required": ["id", "senderId", "senderName", "recipientId", "roomId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles"
+    },
+    "/watchlist/{itemId}": {
+      "schema": "WatchListItem",
+      "description": "Users watch lists"
+    },
+    "/shared_lists/{listId}": {
+      "schema": "SharedList",
+      "description": "Collaborative shared watchlists between friends"
+    },
+    "/shared_lists/{listId}/items/{itemId}": {
+      "schema": "SharedWatchListItem",
+      "description": "Items in a collaborative shared watchlist"
+    },
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Real-time sync rooms"
+    },
+    "/rooms/{roomId}/reactions/{reactionId}": {
+      "schema": "Reaction",
+      "description": "Real-time floating reaction messages"
+    },
+    "/direct_messages/{messageId}": {
+      "schema": "DirectMessage",
+      "description": "Friend chat and direct room invites"
+    },
+    "/invites/{inviteId}": {
+      "schema": "RoomInvite",
+      "description": "Incoming sync room invitations"
+    }
+  }
+}

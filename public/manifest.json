@@ -1,0 +1,22 @@
+{
+  "name": "Penguin View",
+  "short_name": "Penguin View",
+  "description": "Global movie sync and watch lists with real-time liquid glass aesthetics.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/penguin_logo.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "/penguin_logo.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg"
+    }
+  ]
+}

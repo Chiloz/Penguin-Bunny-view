@@ -1,0 +1,6 @@
+{
+  "name": "Penguin View",
+  "description": "A global real-time video sync applet utilizing local file playback and iOS liquid-glass styling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
