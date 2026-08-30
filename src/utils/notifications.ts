@@ -1,6 +1,26 @@
 // Notification and Audio Chime Utilities for Penguin View
 
 /**
+ * Detect if device is running iOS (iPhone / iPad)
+ */
+export const isIOSDevice = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+};
+
+/**
+ * Detect if running as installed standalone PWA
+ */
+export const isStandalonePWA = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  return (
+    (window.navigator as any).standalone === true ||
+    window.matchMedia('(display-mode: standalone)').matches
+  );
+};
+
+/**
  * Play a crystal-clear synthetic notification chime via Web Audio API.
  * Works without external MP3 dependencies across browsers and devices.
  */
@@ -10,7 +30,11 @@ export const playNotificationChime = () => {
     if (!AudioContextClass) return;
     const ctx = new AudioContextClass();
     
-    // Smooth bell tone: 2 harmonic notes
+    // Resume context if suspended (browser autoplay policy)
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
     const now = ctx.currentTime;
     
     // Note 1: E5 (659.25Hz)
@@ -37,7 +61,7 @@ export const playNotificationChime = () => {
     osc2.start(now + 0.08);
     osc2.stop(now + 0.45);
   } catch (err) {
-    // Audio autoplay might be suspended until interaction
+    // Audio autoplay might be blocked before first interaction
   }
 };
 
@@ -45,21 +69,35 @@ export const playNotificationChime = () => {
  * Request notification permissions from the browser/OS.
  */
 export const requestNotificationPermission = async (): Promise<NotificationPermission> => {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
+  if (typeof window === 'undefined') {
     return 'denied';
   }
 
-  try {
-    const permission = await Notification.requestPermission();
-    return permission;
-  } catch (err) {
-    console.error("Error requesting notification permission:", err);
-    return 'denied';
+  // Handle standard Notification API
+  if ('Notification' in window) {
+    try {
+      const permission = await Notification.requestPermission();
+      return permission;
+    } catch (err) {
+      console.warn("Notification.requestPermission standard error:", err);
+      // Older callback fallback if Promise rejection
+      return new Promise((resolve) => {
+        try {
+          Notification.requestPermission((p) => resolve(p));
+        } catch {
+          resolve('denied');
+        }
+      });
+    }
   }
+
+  return 'denied';
 };
 
 /**
  * Send an alert push notification on Phone or Laptop.
+ * Dispatches via ServiceWorker (for mobile/iOS/Android background push),
+ * Web Notification API, and in-app event bus.
  */
 export const sendPushNotification = (
   title: string, 
@@ -67,49 +105,87 @@ export const sendPushNotification = (
     body: string; 
     icon?: string; 
     tag?: string; 
+    url?: string;
     onClick?: () => void;
   }
 ) => {
-  // Always trigger sound and haptic vibration if supported
+  // 1. Always trigger sound chime
   playNotificationChime();
+
+  // 2. Trigger device vibration if supported (Android/supported browsers)
   if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-    navigator.vibrate([100, 50, 100]);
+    try {
+      navigator.vibrate([120, 60, 120]);
+    } catch {}
   }
 
+  // 3. Dispatch In-App Banner Event (guarantees real-time alert visibility)
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('penguin-in-app-notification', {
+        detail: {
+          title,
+          body: options.body,
+          icon: options.icon || '/penguin_logo.jpg',
+          tag: options.tag,
+          onClick: options.onClick
+        }
+      })
+    );
+  }
+
+  // 4. Dispatch System OS / Device Push Notification
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return;
   }
 
   if (Notification.permission === 'granted') {
-    try {
-      const notif = new Notification(title, {
-        body: options.body,
-        icon: options.icon || '/penguin_logo.jpg',
-        badge: '/penguin_logo.jpg',
-        tag: options.tag,
-        silent: false,
+    // Prefer ServiceWorker showNotification (essential on Android & iOS PWA Web Push)
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then((registration) => {
+        registration.showNotification(title, {
+          body: options.body,
+          icon: options.icon || '/penguin_logo.jpg',
+          badge: '/penguin_logo.jpg',
+          tag: options.tag || 'penguin-alert',
+          renotify: true,
+          data: options.url || '/',
+          vibrate: [120, 60, 120]
+        } as NotificationOptions & { vibrate?: number[] }).catch((swErr) => {
+          console.warn("ServiceWorker showNotification fallback to window Notification:", swErr);
+          tryDirectNotification(title, options);
+        });
+      }).catch(() => {
+        tryDirectNotification(title, options);
       });
-
-      if (options.onClick) {
-        notif.onclick = () => {
-          window.focus();
-          options.onClick?.();
-          notif.close();
-        };
-      }
-    } catch (err) {
-      console.warn("Could not dispatch push notification directly, trying service worker:", err);
-      if ('serviceWorker' in navigator && navigator.serviceWorker.ready) {
-        navigator.serviceWorker.ready.then((reg) => {
-          reg.showNotification(title, {
-            body: options.body,
-            icon: options.icon || '/penguin_logo.jpg',
-            tag: options.tag,
-            vibrate: [100, 50, 100]
-          } as NotificationOptions & { vibrate?: number[] });
-        }).catch(swErr => console.warn("SW notification failed:", swErr));
-      }
+    } else {
+      tryDirectNotification(title, options);
     }
+  }
+};
+
+const tryDirectNotification = (
+  title: string,
+  options: { body: string; icon?: string; tag?: string; onClick?: () => void }
+) => {
+  try {
+    const notif = new Notification(title, {
+      body: options.body,
+      icon: options.icon || '/penguin_logo.jpg',
+      badge: '/penguin_logo.jpg',
+      tag: options.tag,
+      silent: false,
+    });
+
+    if (options.onClick) {
+      notif.onclick = () => {
+        window.focus();
+        options.onClick?.();
+        notif.close();
+      };
+    }
+  } catch (directErr) {
+    console.warn("Direct Notification constructor failed:", directErr);
   }
 };
 
@@ -166,3 +242,4 @@ export const compressImageFile = (
     reader.readAsDataURL(file);
   });
 };
+

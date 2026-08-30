@@ -8,6 +8,7 @@ import { Dashboard } from './components/Dashboard';
 import { VideoPlayer } from './components/VideoPlayer';
 import { LiquidGlassCard } from './components/LiquidGlassCard';
 import { AnimatedBackground } from './components/AnimatedBackground';
+import { FloatingNotificationBanner } from './components/FloatingNotificationBanner';
 import { Sparkles, Film } from 'lucide-react';
 
 export default function App() {
@@ -151,6 +152,9 @@ export default function App() {
   return (
     <div className={`min-h-screen bg-[#060911] relative overflow-x-hidden transition-colors duration-500 ${getThemeBackgroundClass()}`}>
       
+      {/* Real-time In-App Push Notification Alert Banner */}
+      <FloatingNotificationBanner />
+
       {/* Dynamic Animated Canvas Background (Liquid, Bubbles, Fire, Cyber, Emerald, etc.) */}
       <AnimatedBackground theme={profile.activeTheme || 'liquid'} customBgImage={profile.customBgImage} />
 
