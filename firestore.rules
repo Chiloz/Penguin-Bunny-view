@@ -89,6 +89,12 @@ service cloud.firestore {
       }
     }
 
+    // Shared Chat Settings (Shared wallpaper & theme between friends + typing indicator)
+    match /chat_settings/{threadId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSignedIn();
+    }
+
     // Direct Messages Rules (Mini Chat & Invites)
     match /direct_messages/{messageId} {
       allow read: if isSignedIn() && (

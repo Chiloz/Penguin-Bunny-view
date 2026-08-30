@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UserProfile, DirectMessage } from '../types';
+import { UserProfile, DirectMessage, ChatThreadSettings } from '../types';
 import { db } from '../firebase';
 import { 
   collection, 
   query, 
   where, 
-  orderBy, 
   onSnapshot, 
   addDoc, 
   serverTimestamp,
   doc,
-  updateDoc
+  updateDoc,
+  setDoc,
+  getDoc
 } from 'firebase/firestore';
 import { 
   MessageSquare, 
@@ -24,8 +25,25 @@ import {
   Check, 
   Film,
   User as UserIcon,
-  Bell
+  Bell,
+  Palette,
+  Image as ImageIcon,
+  Upload,
+  Trash2,
+  Smile,
+  Flame,
+  Droplets,
+  Zap,
+  Heart,
+  Eye,
+  CheckCheck,
+  Smartphone
 } from 'lucide-react';
+import { 
+  sendPushNotification, 
+  requestNotificationPermission, 
+  compressImageFile 
+} from '../utils/notifications';
 
 interface MiniChatDrawerProps {
   currentUser: UserProfile;
@@ -37,6 +55,20 @@ interface MiniChatDrawerProps {
   activeRoomId?: string;
   activeRoomVideoName?: string;
 }
+
+const QUICK_EMOJIS = ['❤️', '😂', '🔥', '😮', '😢', '👍', '🐧', '🍿'];
+
+const CHAT_THEMES = [
+  { id: 'liquid', label: 'Liquid Smooth', icon: Droplets, color: 'from-cyan-500 to-blue-600' },
+  { id: 'bubbles', label: 'Bouncing Bubbles', icon: Sparkles, color: 'from-sky-400 to-indigo-500' },
+  { id: 'fire', label: 'Burning Fire', icon: Flame, color: 'from-amber-500 to-rose-600' },
+  { id: 'cyber', label: 'Cyber Matrix', icon: Zap, color: 'from-emerald-400 to-teal-600' },
+  { id: 'emerald', label: 'Lush Emerald', icon: Heart, color: 'from-teal-400 to-emerald-500' },
+  { id: 'gold', label: 'Royal Gold', icon: Sparkles, color: 'from-yellow-400 to-amber-600' },
+  { id: 'orange', label: 'Sunset Orange', icon: Flame, color: 'from-orange-400 to-amber-600' },
+  { id: 'silver', label: 'Platinum Silver', icon: Eye, color: 'from-slate-300 to-slate-500' },
+  { id: 'sky', label: 'Midnight Sky', icon: Eye, color: 'from-slate-600 to-indigo-900' }
+];
 
 export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
   currentUser,
@@ -57,8 +89,35 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
   const [customRoomId, setCustomRoomId] = useState(activeRoomId || '');
   const [isSendingInvite, setIsSendingInvite] = useState(false);
   const [unreadCounts, setUnreadCounts] = useState<{ [friendUid: string]: number }>({});
+  
+  // Custom Background & Theme Customizer Modal State
+  const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
+  const [chatSettings, setChatSettings] = useState<ChatThreadSettings | null>(null);
+  const [bgImageError, setBgImageError] = useState<string>('');
+  const [isUploadingBg, setIsUploadingBg] = useState<boolean>(false);
+  
+  // Active reaction picker on message
+  const [reactionPickerMsgId, setReactionPickerMsgId] = useState<string | null>(null);
+  
+  // Typing state
+  const [isFriendTyping, setIsFriendTyping] = useState<boolean>(false);
+  const lastTypingSentRef = useRef<number>(0);
+  const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Notification status
+  const [notifPermission, setNotifPermission] = useState<string>(
+    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default'
+  );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  const initialLoadRef = useRef<boolean>(true);
+
+  // Derive conversation thread ID between currentUser and selectedFriend
+  const getThreadId = () => {
+    if (!selectedFriend || !currentUser.uid) return '';
+    return [currentUser.uid, selectedFriend.uid].sort().join('_');
+  };
 
   // Auto select initial friend or first friend if none selected
   useEffect(() => {
@@ -70,7 +129,18 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
     }
   }, [initialSelectedFriendId, friendsProfiles]);
 
-  // Listen for unread / incoming messages across all friends
+  // Request push notification permission
+  const handleEnableNotifications = async () => {
+    const perm = await requestNotificationPermission();
+    setNotifPermission(perm);
+    if (perm === 'granted') {
+      sendPushNotification("Penguin View Notifications Enabled! 🍿", {
+        body: "You'll now receive alerts when friends message you or send room invites."
+      });
+    }
+  };
+
+  // Listen for unread / incoming messages across all friends for unread badges & push notifications
   useEffect(() => {
     if (!currentUser.uid) return;
 
@@ -81,17 +151,78 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const counts: { [friendUid: string]: number } = {};
+      
       snapshot.docs.forEach(d => {
-        const data = d.data();
+        const data = d.data() as DirectMessage;
+        const msgId = d.id;
+
         if (!data.isRead) {
           counts[data.senderId] = (counts[data.senderId] || 0) + 1;
         }
+
+        // Push notification for brand-new incoming messages
+        if (!initialLoadRef.current && !seenMessageIdsRef.current.has(msgId) && !data.isRead) {
+          seenMessageIdsRef.current.add(msgId);
+          
+          sendPushNotification(`💬 ${data.senderName}`, {
+            body: data.isInvite ? `🍿 Room Invite: "${data.roomVideoName || 'Movie Watch'}" - ${data.text}` : data.text,
+            tag: msgId,
+            onClick: () => {
+              const friend = friendsProfiles.find(f => f.uid === data.senderId);
+              if (friend) setSelectedFriend(friend);
+            }
+          });
+        } else {
+          seenMessageIdsRef.current.add(msgId);
+        }
       });
+
       setUnreadCounts(counts);
+      initialLoadRef.current = false;
     });
 
     return () => unsubscribe();
-  }, [currentUser.uid]);
+  }, [currentUser.uid, friendsProfiles]);
+
+  // Real-time listener for shared Chat Settings (Background Wallpaper & Theme) + Typing Status
+  useEffect(() => {
+    const threadId = getThreadId();
+    if (!threadId) {
+      setChatSettings(null);
+      setIsFriendTyping(false);
+      return;
+    }
+
+    const docRef = doc(db, 'chat_settings', threadId);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as ChatThreadSettings;
+        setChatSettings(data);
+
+        // Check if friend is typing
+        if (selectedFriend) {
+          const friendTypingUntil = (data as any)[`typing_${selectedFriend.uid}`] || 0;
+          setIsFriendTyping(friendTypingUntil > Date.now());
+        }
+      } else {
+        setChatSettings(null);
+        setIsFriendTyping(false);
+      }
+    });
+
+    // Check typing expiration interval
+    const interval = setInterval(() => {
+      if (chatSettings && selectedFriend) {
+        const friendTypingUntil = (chatSettings as any)[`typing_${selectedFriend.uid}`] || 0;
+        setIsFriendTyping(friendTypingUntil > Date.now());
+      }
+    }, 1000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
+  }, [selectedFriend, currentUser.uid]);
 
   // Real-time listener for chat messages with selected friend
   useEffect(() => {
@@ -100,7 +231,6 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
       return;
     }
 
-    // Query messages sent from selectedFriend to currentUser OR currentUser to selectedFriend
     const q1 = query(
       collection(db, 'direct_messages'),
       where('senderId', 'in', [currentUser.uid, selectedFriend.uid]),
@@ -108,12 +238,12 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
     );
 
     const unsubscribe = onSnapshot(q1, (snapshot) => {
-      const msgs: DirectMessage[] = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
+      const msgs: DirectMessage[] = snapshot.docs.map(d => ({
+        id: d.id,
+        ...d.data()
       } as DirectMessage));
 
-      // Sort by timestamp on client to handle unsynced indexes
+      // Sort by timestamp on client
       msgs.sort((a, b) => {
         const tA = a.timestamp?.toMillis ? a.timestamp.toMillis() : (a.timestamp || 0);
         const tB = b.timestamp?.toMillis ? b.timestamp.toMillis() : (b.timestamp || 0);
@@ -138,10 +268,44 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
     return () => unsubscribe();
   }, [currentUser.uid, selectedFriend]);
 
-  // Auto scroll to bottom when new messages arrive
+  // Auto scroll to bottom when new messages or typing state changes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isFriendTyping]);
+
+  // Handle typing activity update
+  const handleInputChange = (val: string) => {
+    setTextInput(val);
+    const threadId = getThreadId();
+    if (!threadId || !selectedFriend || !currentUser.uid) return;
+
+    const now = Date.now();
+    if (now - lastTypingSentRef.current > 1500) {
+      lastTypingSentRef.current = now;
+      setDoc(doc(db, 'chat_settings', threadId), {
+        threadId,
+        [`typing_${currentUser.uid}`]: Date.now() + 3500,
+        updatedAt: serverTimestamp()
+      }, { merge: true }).catch(() => {});
+    }
+
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => {
+      setDoc(doc(db, 'chat_settings', threadId), {
+        [`typing_${currentUser.uid}`]: 0
+      }, { merge: true }).catch(() => {});
+    }, 3000);
+  };
+
+  // Clear typing status on submit
+  const clearTypingStatus = () => {
+    const threadId = getThreadId();
+    if (!threadId || !currentUser.uid) return;
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    setDoc(doc(db, 'chat_settings', threadId), {
+      [`typing_${currentUser.uid}`]: 0
+    }, { merge: true }).catch(() => {});
+  };
 
   // Send standard text message
   const handleSendMessage = async (e?: React.FormEvent) => {
@@ -150,6 +314,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
 
     const messageText = textInput.trim();
     setTextInput('');
+    clearTypingStatus();
 
     try {
       await addDoc(collection(db, 'direct_messages'), {
@@ -160,10 +325,108 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
         text: messageText,
         isInvite: false,
         isRead: false,
-        timestamp: serverTimestamp()
+        timestamp: serverTimestamp(),
+        reactions: {}
       });
     } catch (err) {
       console.error("Error sending message:", err);
+    }
+  };
+
+  // Toggle Message Reaction
+  const handleToggleReaction = async (messageId: string, emoji: string, currentReactions?: { [emoji: string]: string[] }) => {
+    const reactions = { ...(currentReactions || {}) };
+    const uids = reactions[emoji] ? [...reactions[emoji]] : [];
+    
+    const userIdx = uids.indexOf(currentUser.uid);
+    if (userIdx >= 0) {
+      uids.splice(userIdx, 1);
+    } else {
+      uids.push(currentUser.uid);
+    }
+
+    if (uids.length === 0) {
+      delete reactions[emoji];
+    } else {
+      reactions[emoji] = uids;
+    }
+
+    setReactionPickerMsgId(null);
+
+    try {
+      await updateDoc(doc(db, 'direct_messages', messageId), {
+        reactions: reactions
+      });
+    } catch (err) {
+      console.error("Error updating reaction:", err);
+    }
+  };
+
+  // Handle Shared Chat Background Image Upload (< 1MB)
+  const handleBgImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setBgImageError('');
+    setIsUploadingBg(true);
+
+    try {
+      // Strictly enforced < 1MB limit & lightweight compression
+      const compressedDataUrl = await compressImageFile(file, 1280, 720, 0.78);
+      const threadId = getThreadId();
+
+      if (!threadId) throw new Error("Conversation thread not initialized.");
+
+      await setDoc(doc(db, 'chat_settings', threadId), {
+        threadId,
+        customBgImage: compressedDataUrl,
+        theme: 'custom',
+        updatedAt: serverTimestamp(),
+        updatedBy: currentUser.uid,
+        updatedByName: currentUser.name
+      }, { merge: true });
+
+      setIsUploadingBg(false);
+    } catch (err: any) {
+      console.error("Chat bg upload error:", err);
+      setBgImageError(err.message || 'Failed to upload background image.');
+      setIsUploadingBg(false);
+    }
+  };
+
+  // Remove Shared Chat Wallpaper
+  const handleRemoveBgImage = async () => {
+    const threadId = getThreadId();
+    if (!threadId) return;
+
+    try {
+      await setDoc(doc(db, 'chat_settings', threadId), {
+        customBgImage: '',
+        theme: 'liquid',
+        updatedAt: serverTimestamp(),
+        updatedBy: currentUser.uid,
+        updatedByName: currentUser.name
+      }, { merge: true });
+    } catch (err) {
+      console.error("Error removing chat bg:", err);
+    }
+  };
+
+  // Select Shared Chat Theme
+  const handleSelectChatTheme = async (themeId: string) => {
+    const threadId = getThreadId();
+    if (!threadId) return;
+
+    try {
+      await setDoc(doc(db, 'chat_settings', threadId), {
+        theme: themeId,
+        customBgImage: '',
+        updatedAt: serverTimestamp(),
+        updatedBy: currentUser.uid,
+        updatedByName: currentUser.name
+      }, { merge: true });
+    } catch (err) {
+      console.error("Error setting chat theme:", err);
     }
   };
 
@@ -188,7 +451,8 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
         roomId: finalRoomId,
         roomVideoName: videoName,
         isRead: false,
-        timestamp: serverTimestamp()
+        timestamp: serverTimestamp(),
+        reactions: {}
       });
 
       // 2. Post to invites collection for Dashboard banner
@@ -213,29 +477,84 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
 
   if (!isOpen) return null;
 
+  // Background styling for Chat Stream based on shared chat settings
+  const getChatStreamBackgroundStyle = () => {
+    if (chatSettings?.customBgImage) {
+      return {
+        backgroundImage: `linear-gradient(rgba(10, 14, 26, 0.72), rgba(10, 14, 26, 0.85)), url(${chatSettings.customBgImage})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      };
+    }
+    return {};
+  };
+
+  const getChatThemeBackgroundClass = () => {
+    if (chatSettings?.customBgImage) {
+      return '';
+    }
+    switch (chatSettings?.theme) {
+      case 'fire': return 'bg-gradient-to-b from-[#1a0808]/95 via-[#2b1010]/90 to-[#0e0404]/95';
+      case 'cyber': return 'bg-gradient-to-b from-[#041a14]/95 via-[#08291d]/90 to-[#020d09]/95';
+      case 'emerald': return 'bg-gradient-to-b from-[#061e16]/95 via-[#0d2d22]/90 to-[#030f0b]/95';
+      case 'bubbles': return 'bg-gradient-to-b from-[#08172e]/95 via-[#122347]/90 to-[#060e1d]/95';
+      case 'gold': return 'bg-gradient-to-b from-[#1f1906]/95 via-[#2b2108]/90 to-[#0d0a02]/95';
+      case 'orange': return 'bg-gradient-to-b from-[#211105]/95 via-[#301a08]/90 to-[#0e0702]/95';
+      case 'silver': return 'bg-gradient-to-b from-[#181a20]/95 via-[#22252e]/90 to-[#0e1015]/95';
+      case 'sky': return 'bg-gradient-to-b from-[#081326]/95 via-[#0e1f3d]/90 to-[#040914]/95';
+      case 'liquid':
+      default:
+        return 'bg-black/15';
+    }
+  };
+
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[92vw] sm:w-[420px] h-[560px] max-h-[85vh] bg-[#0c101d]/95 backdrop-blur-xl border border-sky-500/30 rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-6 duration-300">
+    <div className="fixed bottom-4 right-4 z-50 w-[94vw] sm:w-[440px] h-[590px] max-h-[88vh] bg-[#0c101d]/95 backdrop-blur-2xl border border-sky-500/30 rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-6 duration-300 font-sans">
       
       {/* Drawer Header */}
-      <div className="p-3.5 bg-white/5 border-b border-white/10 flex items-center justify-between shrink-0">
+      <div className="p-3 bg-white/5 border-b border-white/10 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-400 to-indigo-600 flex items-center justify-center text-white shadow-md">
             <MessageSquare className="w-4 h-4" />
           </div>
           <div>
             <h3 className="text-xs font-bold text-white font-display flex items-center gap-1.5">
-              Friend Mini Chat & Invites
+              Friend Mini Chat & Sync
             </h3>
-            <p className="text-[10px] text-slate-400">Instant direct messages & 1-click room invites</p>
+            <p className="text-[10px] text-slate-400">Synced wallpaper, reactions & 1-click room invites</p>
           </div>
         </div>
 
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-all cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Notification permission prompt if not enabled */}
+          {notifPermission !== 'granted' && (
+            <button
+              onClick={handleEnableNotifications}
+              className="p-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/30 text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer"
+              title="Enable Push Notifications on Phone & Laptop"
+            >
+              <Bell className="w-3.5 h-3.5 animate-bounce" />
+              <span className="hidden sm:inline">Enable Alerts</span>
+            </button>
+          )}
+
+          {selectedFriend && (
+            <button
+              onClick={() => setIsThemeModalOpen(true)}
+              className="p-1.5 rounded-xl bg-white/5 hover:bg-sky-500/20 text-slate-300 hover:text-sky-300 border border-white/10 transition-all cursor-pointer"
+              title="Change Shared Chat Background & Theme"
+            >
+              <Palette className="w-4 h-4" />
+            </button>
+          )}
+
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-all cursor-pointer ml-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Friends Selector Bar */}
@@ -248,7 +567,10 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
             return (
               <button
                 key={f.uid}
-                onClick={() => setSelectedFriend(f)}
+                onClick={() => {
+                  setSelectedFriend(f);
+                  setReactionPickerMsgId(null);
+                }}
                 className={`px-2.5 py-1.5 rounded-xl text-xs font-medium flex items-center gap-2 shrink-0 transition-all cursor-pointer border relative ${
                   isSelected
                     ? 'bg-sky-500/20 text-white border-sky-400/50 shadow-md shadow-sky-500/10'
@@ -280,29 +602,47 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
         </div>
       )}
 
-      {/* Main Chat Stream */}
+      {/* Main Chat Stream Container */}
       {selectedFriend ? (
-        <div className="flex-1 p-3 overflow-y-auto space-y-3 bg-black/10 scrollbar-thin">
-          <div className="text-center py-2">
-            <span className="text-[10px] text-slate-500 font-mono bg-white/5 px-2.5 py-1 rounded-full border border-white/5">
-              Chatting with {selectedFriend.name}
+        <div 
+          className={`flex-1 p-3 overflow-y-auto space-y-3 scrollbar-thin relative transition-all ${getChatThemeBackgroundClass()}`}
+          style={getChatStreamBackgroundStyle()}
+          onClick={() => setReactionPickerMsgId(null)}
+        >
+          {/* Header pill in chat */}
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[10px] text-slate-400 font-mono bg-black/40 px-2.5 py-0.5 rounded-full border border-white/10 backdrop-blur-md">
+              💬 With {selectedFriend.name}
             </span>
+
+            {chatSettings?.customBgImage ? (
+              <span className="text-[9px] text-emerald-300 font-mono bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1 backdrop-blur-md">
+                <ImageIcon className="w-2.5 h-2.5" />
+                Shared Wallpaper
+              </span>
+            ) : chatSettings?.theme ? (
+              <span className="text-[9px] text-sky-300 font-mono bg-sky-500/15 px-2 py-0.5 rounded-full border border-sky-500/20 flex items-center gap-1 backdrop-blur-md">
+                <Palette className="w-2.5 h-2.5" />
+                Theme: {chatSettings.theme}
+              </span>
+            ) : null}
           </div>
 
           {messages.length === 0 ? (
             <div className="text-center py-10 space-y-2">
               <Sparkles className="w-6 h-6 text-sky-400 mx-auto opacity-50" />
-              <p className="text-xs text-slate-400">No messages yet with {selectedFriend.name}.</p>
-              <p className="text-[11px] text-slate-500">Say hi or send a 1-click room invite below!</p>
+              <p className="text-xs text-slate-300 font-semibold">No messages yet with {selectedFriend.name}.</p>
+              <p className="text-[11px] text-slate-400">Say hi, customize your shared chat wallpaper, or send a room invite below!</p>
             </div>
           ) : (
             messages.map((msg) => {
               const isMe = msg.senderId === currentUser.uid;
+              const isPickerOpen = reactionPickerMsgId === msg.id;
 
               return (
                 <div
                   key={msg.id}
-                  className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} space-y-1`}
+                  className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} space-y-1 relative group`}
                 >
                   <div className="flex items-center gap-1.5 px-1">
                     <span className="text-[9px] text-slate-400 font-medium">{isMe ? 'You' : msg.senderName}</span>
@@ -310,9 +650,9 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
 
                   {msg.isInvite ? (
                     /* Sync Watch Room Invite Card */
-                    <div className={`p-3.5 rounded-2xl max-w-[85%] border space-y-2.5 shadow-lg ${
+                    <div className={`p-3.5 rounded-2xl max-w-[88%] border space-y-2.5 shadow-lg backdrop-blur-md ${
                       isMe 
-                        ? 'bg-gradient-to-br from-indigo-900/60 to-sky-900/60 border-sky-400/40 text-white'
+                        ? 'bg-gradient-to-br from-indigo-900/80 to-sky-900/80 border-sky-400/40 text-white'
                         : 'bg-gradient-to-br from-slate-900/90 to-indigo-950/90 border-indigo-400/40 text-white'
                     }`}>
                       <div className="flex items-center gap-2 border-b border-white/10 pb-2">
@@ -330,7 +670,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
                       <p className="text-xs text-slate-200 font-sans leading-snug">{msg.text}</p>
 
                       <div className="pt-1 flex items-center justify-between gap-2">
-                        <div className="text-[10px] font-mono text-slate-300 bg-white/5 px-2 py-1 rounded-md border border-white/10 truncate max-w-[140px]">
+                        <div className="text-[10px] font-mono text-slate-300 bg-white/5 px-2 py-1 rounded-md border border-white/10 truncate max-w-[130px]">
                           ID: {msg.roomId}
                         </div>
 
@@ -350,20 +690,101 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
                     </div>
                   ) : (
                     /* Regular Text Bubble */
-                    <div
-                      className={`px-3.5 py-2 rounded-2xl text-xs max-w-[80%] leading-relaxed ${
-                        isMe
-                          ? 'bg-sky-500 text-white rounded-br-none shadow-md shadow-sky-500/20'
-                          : 'bg-white/10 text-slate-100 rounded-bl-none border border-white/10'
-                      }`}
+                    <div className="relative">
+                      <div
+                        className={`px-3.5 py-2 rounded-2xl text-xs max-w-[85%] leading-relaxed break-words shadow-md transition-all ${
+                          isMe
+                            ? 'bg-sky-500 text-white rounded-br-none shadow-sky-500/20'
+                            : 'bg-[#182033]/90 text-slate-100 rounded-bl-none border border-white/15 backdrop-blur-md'
+                        }`}
+                      >
+                        {msg.text}
+                      </div>
+
+                      {/* Quick Reaction Button Trigger on Hover/Tap */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReactionPickerMsgId(isPickerOpen ? null : msg.id);
+                        }}
+                        className={`absolute top-0 ${isMe ? '-left-7' : '-right-7'} opacity-0 group-hover:opacity-100 p-1 rounded-full bg-black/60 border border-white/20 text-slate-300 hover:text-white transition-opacity cursor-pointer`}
+                        title="React to message"
+                      >
+                        <Smile className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Reaction Badges List */}
+                  {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-0.5">
+                      {Object.entries(msg.reactions).map(([emoji, rawUids]) => {
+                        const uids = Array.isArray(rawUids) ? rawUids : [];
+                        if (uids.length === 0) return null;
+                        const hasReacted = uids.includes(currentUser.uid);
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => handleToggleReaction(msg.id, emoji, msg.reactions)}
+                            className={`px-2 py-0.5 rounded-full text-[11px] flex items-center gap-1 border transition-all cursor-pointer backdrop-blur-md ${
+                              hasReacted
+                                ? 'bg-sky-500/30 border-sky-400 text-white shadow-sm shadow-sky-500/30'
+                                : 'bg-black/50 border-white/15 text-slate-300 hover:bg-white/10'
+                            }`}
+                            title={`${uids.length} reaction${uids.length > 1 ? 's' : ''}`}
+                          >
+                            <span>{emoji}</span>
+                            <span className="text-[9px] font-bold font-mono">{uids.length}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Emoji Reaction Selector Bar */}
+                  {isPickerOpen && (
+                    <div 
+                      className={`absolute z-30 -top-8 ${isMe ? 'right-0' : 'left-0'} flex items-center gap-1 bg-[#121829]/95 border border-white/20 p-1 rounded-2xl shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-150`}
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      {msg.text}
+                      {QUICK_EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => handleToggleReaction(msg.id, emoji, msg.reactions)}
+                          className="p-1 hover:scale-125 active:scale-95 transition-transform text-sm cursor-pointer rounded-lg hover:bg-white/10"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
               );
             })
           )}
+
+          {/* Typing Feedback Bubble */}
+          {isFriendTyping && selectedFriend && (
+            <div className="flex items-center gap-2 pt-1 animate-in fade-in slide-in-from-bottom-2 duration-200">
+              <div className="w-6 h-6 rounded-lg bg-white/10 border border-white/20 flex items-center justify-center text-xs overflow-hidden shrink-0">
+                {selectedFriend.profilePic && selectedFriend.profilePic.startsWith('data:image/') ? (
+                  <img src={selectedFriend.profilePic} alt={selectedFriend.name} className="w-full h-full object-cover" />
+                ) : (
+                  selectedFriend.profilePic || '🐧'
+                )}
+              </div>
+              <div className="px-3 py-2 rounded-2xl rounded-bl-none bg-[#182033]/90 backdrop-blur-md border border-sky-400/30 flex items-center gap-1.5 shadow-md">
+                <span className="text-[10px] text-slate-300 font-medium mr-1">{selectedFriend.name} is typing</span>
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce [animation-delay:-0.3s]"></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce [animation-delay:-0.15s]"></span>
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce"></span>
+              </div>
+            </div>
+          )}
+
           <div ref={messagesEndRef} />
         </div>
       ) : (
@@ -374,7 +795,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
 
       {/* Input Footer & Invite Launcher */}
       {selectedFriend && (
-        <div className="p-3 bg-white/5 border-t border-white/10 space-y-2 shrink-0">
+        <div className="p-3 bg-white/5 border-t border-white/10 space-y-2 shrink-0 backdrop-blur-md">
           
           {/* Quick Action Buttons */}
           <div className="flex items-center justify-between gap-2">
@@ -386,9 +807,13 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
               <span>🍿 Send Room Invite</span>
             </button>
 
-            <span className="text-[10px] text-slate-400 font-mono truncate">
-              {selectedFriend.name}
-            </span>
+            <button
+              onClick={() => setIsThemeModalOpen(true)}
+              className="text-[10px] text-sky-400 hover:text-sky-300 flex items-center gap-1 cursor-pointer font-semibold"
+            >
+              <Palette className="w-3 h-3" />
+              <span>Shared Theme & Wallpaper</span>
+            </button>
           </div>
 
           {/* Standard Text Chat Form */}
@@ -398,16 +823,146 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
               placeholder={`Message ${selectedFriend.name}...`}
               className="px-3 py-2 text-xs text-slate-100 liquid-glass-input flex-grow"
               value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
+              onChange={(e) => handleInputChange(e.target.value)}
             />
             <button
               type="submit"
               disabled={!textInput.trim()}
-              className="px-3.5 py-2 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:hover:bg-sky-500 text-white rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-md shadow-sky-500/20"
+              className="px-3.5 py-2 bg-gradient-to-r from-sky-400 to-indigo-600 hover:from-sky-300 hover:to-indigo-500 disabled:opacity-40 disabled:hover:from-sky-400 disabled:hover:to-indigo-600 text-white rounded-xl transition-all flex items-center justify-center cursor-pointer shadow-md shadow-sky-500/20"
             >
               <Send className="w-3.5 h-3.5" />
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Shared Chat Wallpaper & Theme Customizer Modal Overlay */}
+      {isThemeModalOpen && selectedFriend && (
+        <div className="absolute inset-0 bg-black/85 backdrop-blur-xl p-4 z-50 flex flex-col justify-between overflow-y-auto animate-in fade-in duration-200">
+          <div className="space-y-4">
+            
+            <div className="flex items-center justify-between border-b border-white/10 pb-2">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-sky-500/20 text-sky-300 rounded-xl">
+                  <Palette className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white font-display">Shared Chat Wallpaper & Theme</h4>
+                  <p className="text-[10px] text-slate-400">Updates simultaneously for both you & {selectedFriend.name}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsThemeModalOpen(false)}
+                className="p-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Background Image Upload Option (< 1MB) */}
+            <div className="space-y-2 bg-white/5 p-3 rounded-2xl border border-white/10">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-bold text-white flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                  <ImageIcon className="w-3.5 h-3.5 text-indigo-400" />
+                  Custom Background Image
+                </label>
+                <span className="text-[9px] font-mono text-amber-300 bg-amber-500/10 px-2 py-0.5 border border-amber-400/20 rounded-md">
+                  Strictly &lt; 1.0 MB
+                </span>
+              </div>
+
+              {bgImageError && (
+                <div className="p-2 text-xs text-rose-300 bg-rose-950/40 border border-rose-500/30 rounded-xl flex items-center gap-1.5">
+                  <X className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+                  <span>{bgImageError}</span>
+                </div>
+              )}
+
+              {chatSettings?.customBgImage ? (
+                <div 
+                  className="relative rounded-2xl overflow-hidden border border-white/20 h-28 bg-cover bg-center flex items-end p-3"
+                  style={{ backgroundImage: `url(${chatSettings.customBgImage})` }}
+                >
+                  <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" />
+                  <div className="relative z-10 flex items-center justify-between w-full">
+                    <span className="text-[10px] text-white font-mono bg-black/60 px-2 py-1 rounded-md border border-white/20">
+                      Active for both users
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRemoveBgImage}
+                      className="px-2.5 py-1 bg-rose-500/80 hover:bg-rose-600 text-white text-[10px] font-bold rounded-lg flex items-center gap-1 transition-all cursor-pointer shadow-md"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      Remove Wallpaper
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center p-3 border border-dashed border-white/15 rounded-xl space-y-2">
+                  <p className="text-[11px] text-slate-300">Upload a background photo for this chat stream.</p>
+                  <label 
+                    htmlFor="chat-bg-upload-input" 
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 text-sky-200 border border-sky-400/30 rounded-xl text-xs font-semibold cursor-pointer transition-all active:scale-95"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-sky-300" />
+                    <span>{isUploadingBg ? 'Compressing & Syncing...' : 'Upload Image (Max 1MB)'}</span>
+                  </label>
+                  <input
+                    id="chat-bg-upload-input"
+                    type="file"
+                    accept="image/*"
+                    onChange={handleBgImageUpload}
+                    className="hidden"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* App Themes for Chat Stream */}
+            <div className="space-y-2">
+              <label className="text-[11px] font-bold text-white flex items-center gap-1.5 font-mono uppercase tracking-wider">
+                <Palette className="w-3.5 h-3.5 text-sky-400" />
+                Or Select Shared Visual Theme
+              </label>
+              <p className="text-[10px] text-slate-400">
+                Choose a built-in animated / color theme if you do not want to upload an image.
+              </p>
+
+              <div className="grid grid-cols-3 gap-1.5 max-h-48 overflow-y-auto pr-1">
+                {CHAT_THEMES.map((theme) => {
+                  const Icon = theme.icon;
+                  const isSelected = (!chatSettings?.customBgImage && chatSettings?.theme === theme.id) || (!chatSettings?.theme && theme.id === 'liquid');
+
+                  return (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      onClick={() => handleSelectChatTheme(theme.id)}
+                      className={`p-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                        isSelected
+                          ? 'bg-sky-500/25 text-white border-sky-400 shadow-md shadow-sky-500/20'
+                          : 'bg-white/5 text-slate-300 border-white/5 hover:bg-white/10'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+                      <span className="truncate text-[11px]">{theme.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+          </div>
+
+          <div className="pt-3 border-t border-white/10">
+            <button
+              onClick={() => setIsThemeModalOpen(false)}
+              className="w-full py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
         </div>
       )}
 
@@ -422,7 +977,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
               </div>
               <button
                 onClick={() => setIsInviteModalOpen(false)}
-                className="text-slate-400 hover:text-white"
+                className="text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -478,7 +1033,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
               <button
                 type="button"
                 onClick={() => setIsInviteModalOpen(false)}
-                className="px-3 py-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl text-xs font-semibold"
+                className="px-3 py-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Cancel
               </button>

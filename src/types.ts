@@ -88,7 +88,19 @@ export interface DirectMessage {
   isInvite?: boolean;
   roomId?: string;
   roomVideoName?: string;
+  isRead?: boolean;
   timestamp: any;
+  reactions?: { [emoji: string]: string[] }; // Map of emoji string to array of user UIDs who reacted
+}
+
+export interface ChatThreadSettings {
+  threadId: string; // [uid1, uid2].sort().join('_')
+  customBgImage?: string; // Shared base64 background wallpaper
+  theme?: string; // Shared background theme ('sky', 'cyber', 'fire', 'bubbles', 'liquid', 'emerald', etc.)
+  updatedAt?: any;
+  updatedBy?: string;
+  updatedByName?: string;
+  typing?: { [uid: string]: number }; // Map of uid to epoch millisecond timestamp
 }
 
 export interface RoomInvite {

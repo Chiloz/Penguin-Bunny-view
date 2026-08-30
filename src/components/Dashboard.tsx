@@ -44,10 +44,17 @@ import {
   X,
   MessageSquare,
   Smartphone,
-  Download
+  Download,
+  Bell,
+  Volume2
 } from 'lucide-react';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase';
+import { 
+  sendPushNotification, 
+  requestNotificationPermission, 
+  playNotificationChime 
+} from '../utils/notifications';
 
 interface DashboardProps {
   currentUser: UserProfile;
@@ -96,7 +103,33 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [totalUnreadCount, setTotalUnreadCount] = useState<number>(0);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState<boolean>(false);
 
-  // Listen for total unread direct messages / invites
+  // Push notification permission state
+  const [notifPermission, setNotifPermission] = useState<string>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'unsupported';
+  });
+
+  const handleEnableNotifications = async () => {
+    const granted = await requestNotificationPermission();
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      setNotifPermission(Notification.permission);
+    }
+    if (granted) {
+      sendPushNotification('🔔 Notifications Enabled!', {
+        body: 'Penguin View will now alert you whenever friends message you or invite you to watch movies.',
+      });
+    }
+  };
+
+  const handleTestNotification = () => {
+    sendPushNotification('🐧 Penguin View Alert', {
+      body: 'Test alert: Popcorn is ready! Real-time notifications are working on your device.',
+    });
+  };
+
+  // Listen for total unread direct messages / invites & fire push notification if new
   useEffect(() => {
     if (!currentUser.uid) return;
 
@@ -106,8 +139,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
       where('isRead', '==', false)
     );
 
+    let isInitialLoad = true;
+
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setTotalUnreadCount(snapshot.docs.length);
+
+      // Trigger push notification on newly incoming messages if not initial load
+      if (!isInitialLoad) {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const data = change.doc.data();
+            const senderName = data.senderName || 'A friend';
+            const textPreview = data.messageType === 'room_invite' 
+              ? `🍿 Invited you to watch: ${data.roomMovieTitle || 'a movie'}!` 
+              : data.text || 'Sent you a message';
+
+            sendPushNotification(`💬 ${senderName}`, {
+              body: textPreview,
+              tag: `msg-${change.doc.id}`,
+            });
+          }
+        });
+      }
+      isInitialLoad = false;
     });
 
     return () => unsubscribe();
@@ -437,39 +491,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
-      {/* Animated Theme Switcher Bar */}
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5 font-mono">
-            <Palette className="w-3.5 h-3.5 text-sky-400" />
-            Background Theme
-          </span>
-          <span className="text-[10px] text-slate-400 italic">
-            Click to change live moving theme
-          </span>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-11 gap-2">
-          {ANIMATED_THEMES.map((theme) => {
-            const Icon = theme.icon;
-            const isSelected = activeTheme === theme.id;
-            return (
-              <button
-                key={theme.id}
-                onClick={() => handleSelectTheme(theme.id)}
-                className={`px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
-                  isSelected
-                    ? 'bg-sky-500/25 text-white border-sky-400 shadow-lg shadow-sky-500/20 scale-105'
-                    : 'bg-white/5 text-slate-400 hover:text-slate-200 border-white/5 hover:bg-white/10'
-                }`}
-              >
-                <Icon className={`w-3.5 h-3.5 ${isSelected ? 'text-sky-300' : 'text-slate-400'}`} />
-                <span className="truncate">{theme.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {/* High-Fidelity Sliding Tab Controls to save space on Mobile */}
       <div className="flex items-center justify-center sm:justify-start gap-1 bg-white/5 border border-white/5 p-1 rounded-2xl max-w-sm">
         <button
@@ -785,6 +806,40 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </div>
               </div>
 
+              {/* Live Animated Background Themes */}
+              <div className="pt-2 border-t border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 font-mono">
+                    <Palette className="w-3.5 h-3.5 text-sky-400" />
+                    Live Moving Background Theme
+                  </label>
+                  <span className="text-[10px] text-sky-300 font-mono">
+                    Selected: {activeTheme}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-44 overflow-y-auto pr-1">
+                  {ANIMATED_THEMES.map((theme) => {
+                    const Icon = theme.icon;
+                    const isSelected = activeTheme === theme.id;
+                    return (
+                      <button
+                        key={theme.id}
+                        type="button"
+                        onClick={() => handleSelectTheme(theme.id)}
+                        className={`px-2 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                          isSelected
+                            ? 'bg-sky-500/25 text-white border-sky-400 shadow-md shadow-sky-500/20 scale-[1.02]'
+                            : 'bg-white/5 text-slate-400 hover:text-slate-200 border-white/5 hover:bg-white/10'
+                        }`}
+                      >
+                        <Icon className={`w-3.5 h-3.5 ${isSelected ? 'text-sky-300' : 'text-slate-400'}`} />
+                        <span className="truncate text-[11px]">{theme.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Custom Background Image Upload (Max 1MB) */}
               <div className="space-y-2 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between">
@@ -878,9 +933,53 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </form>
           </LiquidGlassCard>
 
-          {/* Column 2: Friends Hub */}
+          {/* Column 2: Notifications & Friends Hub */}
           <div className="space-y-6">
             
+            {/* Device Push Notifications & Alerts */}
+            <LiquidGlassCard>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-bold text-white font-display flex items-center gap-2">
+                  <Bell className="w-4 h-4 text-sky-400" />
+                  Push Notifications & Alerts
+                </h3>
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                  notifPermission === 'granted'
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+                    : notifPermission === 'denied'
+                    ? 'bg-rose-500/15 text-rose-300 border-rose-400/30'
+                    : 'bg-amber-500/15 text-amber-300 border-amber-400/30'
+                }`}>
+                  {notifPermission === 'granted' ? 'Active / Granted' : notifPermission === 'denied' ? 'Blocked in Browser' : 'Prompt Required'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 mb-3.5 leading-relaxed">
+                Receive instant pop-up alerts, vibrations, and audio chimes on your phone or laptop whenever friends send messages or invite you to watch.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {notifPermission !== 'granted' ? (
+                  <button
+                    type="button"
+                    onClick={handleEnableNotifications}
+                    className="px-3.5 py-2 text-xs font-bold text-sky-100 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 shadow-md shadow-sky-500/10"
+                  >
+                    <Bell className="w-3.5 h-3.5 text-sky-300" />
+                    Enable Phone & Laptop Push Alerts
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleTestNotification}
+                    className="px-3.5 py-2 text-xs font-semibold text-emerald-200 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 rounded-xl flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                  >
+                    <Volume2 className="w-3.5 h-3.5 text-emerald-300" />
+                    Test Notification Sound & Alert
+                  </button>
+                )}
+              </div>
+            </LiquidGlassCard>
+
             {/* Friends Code Share / Addition */}
             <LiquidGlassCard>
               <h3 className="text-sm font-bold text-white font-display flex items-center gap-2 mb-1">
