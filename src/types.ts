@@ -14,6 +14,10 @@ export interface WatchListItem {
   id: string;
   userId: string;
   title: string;
+  itemType?: 'movie' | 'series'; // 'movie' or 'series'
+  currentSeason?: number; // Season currently watching (e.g., 1, 2)
+  currentEpisode?: number; // Episode currently on (e.g., 5)
+  totalEpisodes?: number;
   imageUrl?: string; // Optional Base64 image
   isWatched: boolean;
   ratingType?: 'stars' | 'tomatoes'; // ⭐ Stars or 🍅 Tomatoes
@@ -35,6 +39,10 @@ export interface SharedWatchListItem {
   id: string;
   listId: string;
   title: string;
+  itemType?: 'movie' | 'series';
+  currentSeason?: number;
+  currentEpisode?: number;
+  totalEpisodes?: number;
   addedByUid: string;
   addedByName: string;
   imageUrl?: string;
@@ -91,6 +99,11 @@ export interface DirectMessage {
   isRead?: boolean;
   timestamp: any;
   reactions?: { [emoji: string]: string[] }; // Map of emoji string to array of user UIDs who reacted
+  replyTo?: {
+    id: string;
+    text: string;
+    senderName: string;
+  };
 }
 
 export interface ChatThreadSettings {
