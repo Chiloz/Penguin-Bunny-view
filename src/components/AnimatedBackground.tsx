@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from 'react';
+import { FallAutumnTreeBackground } from './FallAutumnTreeBackground';
 
 interface AnimatedBackgroundProps {
-  theme: 'sky' | 'liquid' | 'bubbles' | 'fire' | 'cyber' | 'emerald' | string;
+  theme: 'sky' | 'liquid' | 'bubbles' | 'fire' | 'cyber' | 'emerald' | 'autumn' | 'fall' | string;
   customBgImage?: string;
 }
 
@@ -9,6 +10,8 @@ export const AnimatedBackground: React.FC<AnimatedBackgroundProps> = ({ theme, c
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
+    if (theme === 'autumn' || theme === 'fall') return;
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -206,6 +209,8 @@ export const AnimatedBackground: React.FC<AnimatedBackgroundProps> = ({ theme, c
     };
   }, [theme]);
 
+  const isAutumn = theme === 'autumn' || theme === 'fall';
+
   return (
     <>
       {customBgImage && (
@@ -214,11 +219,15 @@ export const AnimatedBackground: React.FC<AnimatedBackgroundProps> = ({ theme, c
           style={{ backgroundImage: `url(${customBgImage})` }}
         />
       )}
-      <canvas
-        ref={canvasRef}
-        className="fixed inset-0 pointer-events-none z-0 transition-opacity duration-1000"
-        style={{ opacity: 0.95 }}
-      />
+      {isAutumn ? (
+        <FallAutumnTreeBackground />
+      ) : (
+        <canvas
+          ref={canvasRef}
+          className="fixed inset-0 pointer-events-none z-0 transition-opacity duration-1000"
+          style={{ opacity: 0.95 }}
+        />
+      )}
     </>
   );
 };

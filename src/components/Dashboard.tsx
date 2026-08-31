@@ -46,7 +46,9 @@ import {
   Smartphone,
   Download,
   Bell,
-  Volume2
+  Volume2,
+  Leaf,
+  Trees
 } from 'lucide-react';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase';
@@ -74,6 +76,7 @@ const THEME_PRESETS = [
 ];
 
 const ANIMATED_THEMES = [
+  { id: 'autumn', label: 'Autumn Tree 🍁', icon: Leaf, color: 'from-amber-500 to-orange-600' },
   { id: 'liquid', label: 'Liquid Smooth', icon: Droplets, color: 'from-cyan-500 to-blue-600' },
   { id: 'bubbles', label: 'Bouncing Bubbles', icon: Sparkles, color: 'from-sky-400 to-indigo-500' },
   { id: 'fire', label: 'Burning Fire', icon: Flame, color: 'from-amber-500 to-rose-600' },

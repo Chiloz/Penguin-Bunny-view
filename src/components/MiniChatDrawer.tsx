@@ -36,7 +36,8 @@ import {
   Heart,
   Eye,
   Smartphone,
-  Info
+  Info,
+  Leaf
 } from 'lucide-react';
 import { 
   sendPushNotification, 
@@ -60,6 +61,15 @@ interface MiniChatDrawerProps {
 const QUICK_EMOJIS = ['❤️', '😂', '🔥', '😮', '😢', '👏', '🐧', '🍿'];
 
 const CHAT_THEMES = [
+  { 
+    id: 'autumn', 
+    label: 'Autumn Tree 🍁', 
+    icon: Leaf, 
+    bgClass: 'bg-gradient-to-b from-[#241208] via-[#3d1c08] to-[#1a0c04]',
+    accentGlow: 'rgba(245, 158, 11, 0.35)',
+    bubbleMeClass: 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-orange-500/30',
+    bubbleFriendClass: 'bg-[#331c0c]/90 text-amber-100 border-amber-500/30'
+  },
   { 
     id: 'liquid', 
     label: 'Liquid Smooth', 

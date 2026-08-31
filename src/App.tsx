@@ -165,7 +165,8 @@ export default function App() {
                       profile.themeColor === 'rose' ? '#f43f5e' :
                       profile.themeColor === 'emerald' ? '#10b981' :
                       profile.themeColor === 'amber' ? '#f59e0b' :
-                      profile.themeColor === 'purple' ? '#a855f7' : '#14b8a6'
+                      profile.themeColor === 'purple' ? '#a855f7' :
+                      profile.themeColor === 'autumn' ? '#ea580c' : '#14b8a6'
         }}
       />
       

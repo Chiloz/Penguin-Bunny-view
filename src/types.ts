@@ -5,7 +5,7 @@ export interface UserProfile {
   profilePic: string; // Base64 image data URL or emoji string
   customBgImage?: string; // Optional Base64 background image data URL
   themeColor: string; // Accent color name ('sky', 'rose', 'emerald', 'amber', 'purple', 'teal')
-  activeTheme?: 'sky' | 'liquid' | 'bubbles' | 'fire' | 'cyber' | 'emerald' | 'green' | 'yellow' | 'orange' | 'gold' | 'silver'; // Visual background theme mode
+  activeTheme?: 'sky' | 'liquid' | 'bubbles' | 'fire' | 'cyber' | 'emerald' | 'green' | 'yellow' | 'orange' | 'gold' | 'silver' | 'autumn' | 'fall'; // Visual background theme mode
   friendCode: string; // Unique 6-character code
   friends: string[]; // List of friend uids
 }
