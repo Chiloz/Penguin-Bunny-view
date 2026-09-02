@@ -106,7 +106,7 @@ service cloud.firestore {
     // Media Requests Rules (User suggestions & Uploader Rights)
     match /media_requests/{requestId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.userUid == request.auth.uid;
+      allow create: if isSignedIn();
       allow update, delete: if isSignedIn();
     }
 

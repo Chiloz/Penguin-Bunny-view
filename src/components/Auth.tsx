@@ -283,21 +283,6 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onDemoLogin }) => {
             {isRegistering ? 'Sign In' : 'Create Account'}
           </button>
         </p>
-
-        <div className="mt-6 p-3 bg-white/5 rounded-xl border border-white/5 text-center">
-          <p className="text-[10px] text-slate-400 font-sans leading-relaxed mb-2.5">
-            💡 <strong>Note:</strong> Since this is running in a sandbox, please use <strong>Email &amp; Password</strong> to register. It is 100% active and creates a secure cloud profile!
-          </p>
-          <div className="border-t border-white/5 pt-2 mt-2">
-            <button
-              type="button"
-              onClick={() => onDemoLogin(name || 'Penguin Watcher')}
-              className="text-[10px] font-semibold text-sky-400 hover:text-sky-300 transition-colors"
-            >
-              ⚡ Or skip registration and Enter as a Guest
-            </button>
-          </div>
-        </div>
       </LiquidGlassCard>
 
       <div className="mt-8 text-center text-[10px] text-slate-500 font-mono flex items-center gap-1.5 opacity-60">

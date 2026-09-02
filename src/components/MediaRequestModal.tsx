@@ -12,7 +12,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { UserProfile } from '../types';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { LiquidGlassCard } from './LiquidGlassCard';
 
@@ -53,17 +53,22 @@ export const MediaRequestModal: React.FC<MediaRequestModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      await addDoc(collection(db, 'media_requests'), {
-        userUid: currentUser.uid,
-        userName: currentUser.name,
-        userEmail: currentUser.email,
+      const requestPayload: Record<string, any> = {
+        userUid: auth.currentUser?.uid || currentUser.uid,
+        userName: currentUser.name || 'Penguin User',
+        userEmail: currentUser.email || '',
         type: requestType,
-        category: requestType === 'request_title' ? category : undefined,
-        titleRequested: requestType === 'request_title' ? titleRequested.trim() : undefined,
         note: note.trim(),
         status: 'pending',
         createdAt: serverTimestamp()
-      });
+      };
+
+      if (requestType === 'request_title') {
+        requestPayload.category = category;
+        requestPayload.titleRequested = titleRequested.trim();
+      }
+
+      await addDoc(collection(db, 'media_requests'), requestPayload);
 
       setSuccess(true);
       setTimeout(() => {

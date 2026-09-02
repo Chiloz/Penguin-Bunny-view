@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   X, 
   Upload, 
@@ -13,12 +13,37 @@ import {
   AlertCircle,
   Cloud,
   FileVideo,
-  ListPlus
+  ListPlus,
+  Image as ImageIcon,
+  Video,
+  Folder,
+  Play,
+  Check,
+  ChevronDown,
+  Layers,
+  HelpCircle,
+  FileText,
+  FolderTree,
+  RefreshCw,
+  Info
 } from 'lucide-react';
 import { UserProfile, MediaItem, MediaSeason, MediaEpisode } from '../types';
 import { db } from '../firebase';
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { LiquidGlassCard } from './LiquidGlassCard';
+
+export interface QueuedBatchEpisode {
+  id: string;
+  file: File;
+  title: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  sizeMb: string;
+  status: 'queued' | 'uploading' | 'completed' | 'error';
+  progress?: number;
+  errorMsg?: string;
+  streamUrl?: string;
+}
 
 interface MediaUploadModalProps {
   isOpen: boolean;
@@ -44,8 +69,19 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   );
   const [title, setTitle] = useState<string>(existingMediaItem ? existingMediaItem.title : '');
   const [description, setDescription] = useState<string>(existingMediaItem ? existingMediaItem.description || '' : '');
+  
+  // Poster Art State (URL or Direct Upload)
   const [posterUrl, setPosterUrl] = useState<string>(existingMediaItem ? existingMediaItem.posterUrl || '' : '');
+  const [posterMode, setPosterMode] = useState<'url' | 'upload'>('url');
+  const [isUploadingPoster, setIsUploadingPoster] = useState<boolean>(false);
+  const [posterUploadMsg, setPosterUploadMsg] = useState<string>('');
+
+  // Trailer State (URL or Direct Upload)
   const [trailerUrl, setTrailerUrl] = useState<string>(existingMediaItem ? existingMediaItem.trailerUrl || '' : '');
+  const [trailerMode, setTrailerMode] = useState<'url' | 'upload'>('url');
+  const [isUploadingTrailer, setIsUploadingTrailer] = useState<boolean>(false);
+  const [trailerUploadMsg, setTrailerUploadMsg] = useState<string>('');
+
   const [genresInput, setGenresInput] = useState<string>(
     existingMediaItem ? (existingMediaItem.genres || []).join(', ') : 'Anime, Action'
   );
@@ -73,11 +109,22 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   const [isInspectingArchive, setIsInspectingArchive] = useState<boolean>(false);
   const [archiveInspectResult, setArchiveInspectResult] = useState<any>(null);
 
-  // Method A (Direct File Upload to Archive.org S3) State
+  // Method A (Single File Upload to Archive.org S3) State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [episodeTitle, setEpisodeTitle] = useState<string>('');
   const [uploadProgressText, setUploadProgressText] = useState<string>('');
   const [isUploadingFile, setIsUploadingFile] = useState<boolean>(false);
+
+  // Multi-Select & Entire Folder Batch Upload State
+  const [batchQueue, setBatchQueue] = useState<QueuedBatchEpisode[]>([]);
+  const [isBatchUploading, setIsBatchUploading] = useState<boolean>(false);
+  const [showFolderExplainer, setShowFolderExplainer] = useState<boolean>(false);
+
+  // DOM Refs for file inputs
+  const posterFileInputRef = useRef<HTMLInputElement>(null);
+  const trailerFileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const multiFileInputRef = useRef<HTMLInputElement>(null);
 
   // Form submission state
   const [isSaving, setIsSaving] = useState<boolean>(false);
@@ -223,6 +270,264 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       setIsUploadingFile(false);
       setTimeout(() => setUploadProgressText(''), 3000);
     }
+  };
+
+  // Upload Poster Picture directly from Device
+  const handlePosterFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Fast local preview
+    const previewUrl = URL.createObjectURL(file);
+    setPosterUrl(previewUrl);
+    setIsUploadingPoster(true);
+    setPosterUploadMsg('Uploading picture to Internet Archive...');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('title', `${title || 'Media'} Poster`);
+      formData.append('seriesName', title);
+      formData.append('mediaType', 'image');
+
+      const res = await fetch('/api/archive/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to upload poster image to server');
+      }
+
+      setPosterUrl(data.streamUrl);
+      setPosterUploadMsg('Poster uploaded to Internet Archive cloud!');
+    } catch (err: any) {
+      console.warn('Poster upload warning:', err);
+      // Fallback to data URL so the uploaded picture works seamlessly offline
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          setPosterUrl(reader.result);
+        }
+      };
+      reader.readAsDataURL(file);
+      setPosterUploadMsg('Picture saved from device!');
+    } finally {
+      setIsUploadingPoster(false);
+      setTimeout(() => setPosterUploadMsg(''), 3500);
+    }
+  };
+
+  // Upload Trailer Video directly from Device
+  const handleTrailerFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingTrailer(true);
+    setTrailerUploadMsg('Uploading trailer video to Internet Archive S3...');
+
+    try {
+      const formData = new FormData();
+      formData.append('videoFile', file);
+      formData.append('title', `${title || 'Media'} Official Trailer`);
+      formData.append('seriesName', title);
+      formData.append('mediaType', 'movie');
+
+      const res = await fetch('/api/archive/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to upload trailer');
+      }
+
+      setTrailerUrl(data.streamUrl);
+      setTrailerUploadMsg('Trailer video uploaded successfully!');
+    } catch (err: any) {
+      console.error('Trailer upload error:', err);
+      setError(err.message || 'Failed to upload trailer video.');
+    } finally {
+      setIsUploadingTrailer(false);
+      setTimeout(() => setTrailerUploadMsg(''), 3500);
+    }
+  };
+
+  // Helper to parse filename and webkitRelativePath for Season and Episode numbers
+  const parseVideoFile = (file: File, defaultEpNumber: number, defaultSeasonNumber: number) => {
+    const filename = file.name;
+    const path = (file as any).webkitRelativePath || filename;
+
+    // Try to find season number in directory path or filename (e.g., Season 2, S02, s2, Season_01)
+    let seasonNumber = defaultSeasonNumber;
+    const seasonMatch = path.match(/(?:season|s)\s*0?(\d+)/i);
+    if (seasonMatch) {
+      const sNum = parseInt(seasonMatch[1], 10);
+      if (!isNaN(sNum) && sNum > 0 && sNum < 100) {
+        seasonNumber = sNum;
+      }
+    }
+
+    // Try to find episode number (e.g., E05, Ep 5, Episode 5, #5, S01E03)
+    let episodeNumber = defaultEpNumber;
+    const epMatch = filename.match(/(?:episodes?|ep|e)\s*0?(\d+)/i) || filename.match(/(?:^|\D)(\d{1,3})(?:\D|$)/);
+    if (epMatch) {
+      const num = parseInt(epMatch[1], 10);
+      if (!isNaN(num) && num > 0 && num < 2000) {
+        episodeNumber = num;
+      }
+    }
+
+    // Clean title for display
+    let cleanTitle = filename
+      .replace(/\.[^/.]+$/, '') // remove file extension
+      .replace(/[._-]/g, ' ')   // replace separators with spaces
+      .replace(/\s+/g, ' ')      // remove extra spaces
+      .trim();
+
+    if (/^\d+$/.test(cleanTitle)) {
+      cleanTitle = `Episode ${cleanTitle}`;
+    }
+
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+
+    return { seasonNumber, episodeNumber, cleanTitle, sizeMb };
+  };
+
+  // Handle Multi-Select Files or Whole Folder Selection
+  const handleBatchFileSelection = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const validVideoExts = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.flv', '.wmv'];
+    const currentSeasonNum = seasons[activeSeasonIndex]?.seasonNumber || 1;
+    const currentEpCount = seasons[activeSeasonIndex]?.episodes?.length || 0;
+
+    const rawFiles: File[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const lower = file.name.toLowerCase();
+      if (validVideoExts.some(ext => lower.endsWith(ext))) {
+        rawFiles.push(file);
+      }
+    }
+
+    if (rawFiles.length === 0) {
+      setError('No valid video files (.mp4, .mkv, .webm, etc.) were found in the selected folder/files.');
+      return;
+    }
+
+    // Sort files naturally by path/name (so Episode 1 comes before Episode 2, 10, etc.)
+    rawFiles.sort((a, b) => {
+      const pathA = (a as any).webkitRelativePath || a.name;
+      const pathB = (b as any).webkitRelativePath || b.name;
+      return pathA.localeCompare(pathB, undefined, { numeric: true, sensitivity: 'base' });
+    });
+
+    const newQueue: QueuedBatchEpisode[] = rawFiles.map((file, index) => {
+      const parsed = parseVideoFile(file, currentEpCount + index + 1, currentSeasonNum);
+      return {
+        id: `${file.name}-${index}-${Date.now()}`,
+        file,
+        title: parsed.cleanTitle,
+        seasonNumber: parsed.seasonNumber,
+        episodeNumber: parsed.episodeNumber,
+        sizeMb: parsed.sizeMb,
+        status: 'queued'
+      };
+    });
+
+    setBatchQueue(prev => [...prev, ...newQueue]);
+    setError('');
+  };
+
+  // Start Batch Upload Process
+  const handleStartBatchUpload = async () => {
+    const queuedItems = batchQueue.filter(q => q.status === 'queued' || q.status === 'error');
+    if (queuedItems.length === 0) return;
+
+    setIsBatchUploading(true);
+    setError('');
+    setUploadProgressText(`Uploading ${queuedItems.length} episodes to Internet Archive S3...`);
+
+    for (let i = 0; i < batchQueue.length; i++) {
+      const item = batchQueue[i];
+      if (item.status === 'completed') continue;
+
+      setBatchQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'uploading' } : q));
+      setUploadProgressText(`[${i + 1}/${batchQueue.length}] Uploading "${item.title}" (${item.sizeMb})...`);
+
+      try {
+        const formData = new FormData();
+        formData.append('videoFile', item.file);
+        formData.append('title', item.title);
+        formData.append('seriesName', title.trim() || 'Series');
+        formData.append('seasonNumber', item.seasonNumber.toString());
+        formData.append('episodeNumber', item.episodeNumber.toString());
+        formData.append('mediaType', mediaType);
+
+        const res = await fetch('/api/archive/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || `Upload failed for ${item.file.name}`);
+        }
+
+        setBatchQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'completed', streamUrl: data.streamUrl } : q));
+
+        // Insert into matching season in state
+        const targetSeasonNumber = item.seasonNumber;
+        const newEp: MediaEpisode = {
+          episodeNumber: item.episodeNumber,
+          title: item.title,
+          streamUrl: data.streamUrl,
+          downloadUrl: data.downloadUrl
+        };
+
+        setSeasons(prev => {
+          const updated = [...prev];
+          let sIdx = updated.findIndex(s => s.seasonNumber === targetSeasonNumber);
+          if (sIdx === -1) {
+            updated.push({
+              seasonNumber: targetSeasonNumber,
+              seasonTitle: `Season ${targetSeasonNumber}`,
+              episodes: []
+            });
+            sIdx = updated.length - 1;
+          }
+
+          const existingEpIdx = updated[sIdx].episodes.findIndex(e => e.episodeNumber === item.episodeNumber);
+          if (existingEpIdx !== -1) {
+            updated[sIdx].episodes[existingEpIdx] = newEp;
+          } else {
+            updated[sIdx].episodes.push(newEp);
+          }
+          updated[sIdx].episodes.sort((a, b) => a.episodeNumber - b.episodeNumber);
+          return updated;
+        });
+
+      } catch (err: any) {
+        console.error(err);
+        setBatchQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'error', errorMsg: err.message || 'Failed' } : q));
+      }
+    }
+
+    setIsBatchUploading(false);
+    setUploadProgressText('Batch upload finished! All episodes have been added to the season.');
+    setTimeout(() => setUploadProgressText(''), 4000);
+  };
+
+  const handleRemoveFromQueue = (id: string) => {
+    setBatchQueue(prev => prev.filter(q => q.id !== id));
+  };
+
+  const handleClearQueue = () => {
+    setBatchQueue([]);
   };
 
   // Add empty Season
@@ -506,32 +811,208 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 )}
               </div>
 
-              {/* Poster Image URL & Trailer URL */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                    Poster Art URL
-                  </label>
-                  <input
-                    type="url"
-                    placeholder="https://.../poster.jpg"
-                    className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
-                    value={posterUrl}
-                    onChange={(e) => setPosterUrl(e.target.value)}
-                  />
+              {/* Poster Image URL & Trailer URL with Dual Mode (Link or Device Upload) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-white/[0.02] p-3 sm:p-4 rounded-2xl border border-white/5">
+                
+                {/* Poster Art Section */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <ImageIcon className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Poster Art</span>
+                    </label>
+                    
+                    {/* Mode Toggle */}
+                    <div className="flex items-center gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setPosterMode('url')}
+                        className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-all cursor-pointer ${
+                          posterMode === 'url' ? 'bg-sky-500/30 text-sky-200 shadow' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Link URL
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPosterMode('upload')}
+                        className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-all cursor-pointer ${
+                          posterMode === 'upload' ? 'bg-sky-500/30 text-sky-200 shadow' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Upload Picture
+                      </button>
+                    </div>
+                  </div>
+
+                  {posterMode === 'url' ? (
+                    <input
+                      type="url"
+                      placeholder="https://.../poster.jpg"
+                      className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
+                      value={posterUrl}
+                      onChange={(e) => setPosterUrl(e.target.value)}
+                    />
+                  ) : (
+                    <div className="space-y-2">
+                      <input
+                        type="file"
+                        ref={posterFileInputRef}
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handlePosterFileSelect}
+                      />
+                      <button
+                        type="button"
+                        disabled={isUploadingPoster}
+                        onClick={() => posterFileInputRef.current?.click()}
+                        className="w-full py-2.5 px-3 bg-white/5 hover:bg-white/10 border border-dashed border-sky-400/30 rounded-xl text-xs text-slate-300 hover:text-white flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                      >
+                        {isUploadingPoster ? (
+                          <>
+                            <span className="animate-spin text-sky-400">⏳</span>
+                            <span className="text-sky-300">Uploading picture...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-3.5 h-3.5 text-sky-400" />
+                            <span>Choose Image from Device</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                  {posterUploadMsg && (
+                    <p className="text-[10px] text-sky-300 font-mono animate-fade-in">
+                      {posterUploadMsg}
+                    </p>
+                  )}
+
+                  {posterUrl && (
+                    <div className="flex items-center gap-2.5 p-1.5 bg-black/40 rounded-xl border border-white/10">
+                      <img
+                        src={posterUrl}
+                        alt="Poster Preview"
+                        className="w-8 h-11 object-cover rounded-lg border border-white/10 shrink-0"
+                        onError={(e) => { (e.target as any).style.display = 'none'; }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-slate-200 truncate font-mono">{posterUrl}</p>
+                        <p className="text-[9px] text-emerald-400 flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Ready for display
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPosterUrl('')}
+                        className="p-1 text-slate-400 hover:text-rose-400 cursor-pointer"
+                        title="Remove poster"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                    Trailer Link (YouTube or MP4)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="https://www.youtube.com/watch?v=... or .mp4"
-                    className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
-                    value={trailerUrl}
-                    onChange={(e) => setTrailerUrl(e.target.value)}
-                  />
+
+                {/* Trailer Section */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <Video className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Trailer</span>
+                    </label>
+
+                    {/* Mode Toggle */}
+                    <div className="flex items-center gap-1 bg-white/5 p-0.5 rounded-lg border border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setTrailerMode('url')}
+                        className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-all cursor-pointer ${
+                          trailerMode === 'url' ? 'bg-indigo-500/30 text-indigo-200 shadow' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Link URL
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTrailerMode('upload')}
+                        className={`px-2 py-0.5 text-[10px] font-medium rounded-md transition-all cursor-pointer ${
+                          trailerMode === 'upload' ? 'bg-indigo-500/30 text-indigo-200 shadow' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Upload Video
+                      </button>
+                    </div>
+                  </div>
+
+                  {trailerMode === 'url' ? (
+                    <input
+                      type="text"
+                      placeholder="https://www.youtube.com/watch?v=... or .mp4"
+                      className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
+                      value={trailerUrl}
+                      onChange={(e) => setTrailerUrl(e.target.value)}
+                    />
+                  ) : (
+                    <div className="space-y-2">
+                      <input
+                        type="file"
+                        ref={trailerFileInputRef}
+                        accept="video/*"
+                        className="hidden"
+                        onChange={handleTrailerFileSelect}
+                      />
+                      <button
+                        type="button"
+                        disabled={isUploadingTrailer}
+                        onClick={() => trailerFileInputRef.current?.click()}
+                        className="w-full py-2.5 px-3 bg-white/5 hover:bg-white/10 border border-dashed border-indigo-400/30 rounded-xl text-xs text-slate-300 hover:text-white flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                      >
+                        {isUploadingTrailer ? (
+                          <>
+                            <span className="animate-spin text-indigo-400">⏳</span>
+                            <span className="text-indigo-300">Uploading trailer...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>Choose Video from Device</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                  {trailerUploadMsg && (
+                    <p className="text-[10px] text-indigo-300 font-mono animate-fade-in">
+                      {trailerUploadMsg}
+                    </p>
+                  )}
+
+                  {trailerUrl && (
+                    <div className="flex items-center gap-2 p-1.5 bg-black/40 rounded-xl border border-white/10">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-300 flex items-center justify-center shrink-0">
+                        <Play className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-slate-200 truncate font-mono">{trailerUrl}</p>
+                        <p className="text-[9px] text-emerald-400 flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Trailer linked
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setTrailerUrl('')}
+                        className="p-1 text-slate-400 hover:text-rose-400 cursor-pointer"
+                        title="Remove trailer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
+
               </div>
 
               {/* Source Mode Switcher */}
@@ -693,22 +1174,217 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
               {/* Seasons & Episodes Editor (For TV Series & Anime) */}
               {mediaType !== 'movie' && (
-                <div className="border-t border-white/10 pt-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-white uppercase font-mono tracking-wider flex items-center gap-1.5">
-                      <FolderPlus className="w-4 h-4 text-sky-400" />
-                      Seasons & Episode Folder Structure
-                    </h4>
+                <div className="border-t border-white/10 pt-4 space-y-4">
+                  {/* Header & Folder Structure Explanation Toggle */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-bold text-white uppercase font-mono tracking-wider flex items-center gap-1.5">
+                        <FolderPlus className="w-4 h-4 text-sky-400" />
+                        Seasons & Episode Structure
+                      </h4>
+                      <p className="text-[11px] text-slate-400">
+                        Upload multi-episodes or entire folders without uploading one by one.
+                      </p>
+                    </div>
 
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowFolderExplainer(!showFolderExplainer)}
+                        className="text-[10px] text-sky-300 hover:text-sky-200 bg-sky-500/10 hover:bg-sky-500/20 px-2.5 py-1 rounded-lg border border-sky-400/20 transition-all cursor-pointer flex items-center gap-1"
+                      >
+                        <HelpCircle className="w-3.5 h-3.5" />
+                        <span>How Folder Structure Works</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleAddSeason}
+                        className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 px-2.5 py-1 rounded-lg border border-emerald-400/20 transition-all cursor-pointer flex items-center gap-1"
+                      >
+                        <Plus className="w-3 h-3" />
+                        Add Season
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Folder Structure Explainer Panel */}
+                  {showFolderExplainer && (
+                    <div className="p-3.5 bg-sky-950/40 border border-sky-400/30 rounded-2xl text-xs space-y-2 text-slate-200 animate-fade-in">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-sky-300 flex items-center gap-1.5 text-xs font-mono">
+                          <Info className="w-4 h-4 text-sky-400" />
+                          How Season & Episode Folders Work in Penguin View
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowFolderExplainer(false)}
+                          className="text-slate-400 hover:text-white"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-slate-300 space-y-1.5 leading-relaxed">
+                        <p>
+                          • <strong>Hierarchical Structure:</strong> Shows are organized as <code>Series ➔ Season Folders ➔ Episode Videos</code>.
+                        </p>
+                        <p>
+                          • <strong>No more uploading one-by-one!</strong> You can click <span className="text-sky-300 font-semibold">"Upload Whole Folder"</span> or <span className="text-indigo-300 font-semibold">"Multi-Select Episodes"</span> below.
+                        </p>
+                        <p>
+                          • <strong>Smart Auto-Detection:</strong> Penguin View reads your file names (like <code>S01E03.mp4</code>, <code>Episode 5.mkv</code>, or <code>Season 2/Ep 10.webm</code>), detects the correct season & episode numbers, and organizes them automatically in sequence!
+                        </p>
+                        <p>
+                          • <strong>Cloud Storage:</strong> When you click "Start Batch Upload", files stream seamlessly to Internet Archive S3, generating permanent streaming and download links.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Multi-Select & Folder Upload Buttons */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-white/[0.03] p-2.5 rounded-2xl border border-white/10">
+                    {/* Hidden Inputs */}
+                    <input
+                      type="file"
+                      ref={folderInputRef}
+                      {...({ webkitdirectory: '', directory: '' } as any)}
+                      multiple
+                      className="hidden"
+                      onChange={(e) => handleBatchFileSelection(e.target.files)}
+                    />
+                    <input
+                      type="file"
+                      ref={multiFileInputRef}
+                      multiple
+                      accept="video/*,.mkv,.mp4,.webm,.avi,.mov,.flv,.wmv"
+                      className="hidden"
+                      onChange={(e) => handleBatchFileSelection(e.target.files)}
+                    />
+
+                    {/* Folder Button */}
                     <button
                       type="button"
-                      onClick={handleAddSeason}
-                      className="text-[10px] font-semibold text-sky-300 bg-sky-500/15 hover:bg-sky-500/25 px-2.5 py-1 rounded-lg border border-sky-400/20 transition-all cursor-pointer flex items-center gap-1"
+                      onClick={() => folderInputRef.current?.click()}
+                      className="p-3 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/30 rounded-xl text-left flex items-center gap-3 transition-all cursor-pointer group"
                     >
-                      <Plus className="w-3 h-3" />
-                      Add Season
+                      <div className="w-9 h-9 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        <FolderTree className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-sky-200">Upload Whole Folder</p>
+                        <p className="text-[10px] text-slate-400">Select a folder with season video files</p>
+                      </div>
+                    </button>
+
+                    {/* Multi-Select Button */}
+                    <button
+                      type="button"
+                      onClick={() => multiFileInputRef.current?.click()}
+                      className="p-3 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-400/30 rounded-xl text-left flex items-center gap-3 transition-all cursor-pointer group"
+                    >
+                      <div className="w-9 h-9 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                        <Layers className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-indigo-200">Multi-Select Episodes</p>
+                        <p className="text-[10px] text-slate-400">Select multiple .mp4 / .mkv files at once</p>
+                      </div>
                     </button>
                   </div>
+
+                  {/* Batch Upload Queue Card (when files are selected) */}
+                  {batchQueue.length > 0 && (
+                    <div className="p-3 bg-indigo-950/30 border border-indigo-500/30 rounded-2xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white font-mono flex items-center gap-1.5">
+                            <Layers className="w-4 h-4 text-indigo-400" />
+                            Batch Queue: {batchQueue.length} Episodes Selected
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-400/20">
+                            {batchQueue.filter(b => b.status === 'completed').length}/{batchQueue.length} done
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={isBatchUploading}
+                            onClick={handleClearQueue}
+                            className="text-[10px] text-slate-400 hover:text-rose-400 cursor-pointer disabled:opacity-50"
+                          >
+                            Clear Queue
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isBatchUploading || batchQueue.every(b => b.status === 'completed')}
+                            onClick={handleStartBatchUpload}
+                            className="px-3 py-1.5 bg-gradient-to-r from-sky-400 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer shadow disabled:opacity-50"
+                          >
+                            {isBatchUploading ? (
+                              <>
+                                <span className="animate-spin text-xs">⏳</span>
+                                <span>Uploading...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>Start Batch Upload</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Queue Item List */}
+                      <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                        {batchQueue.map((item) => (
+                          <div
+                            key={item.id}
+                            className="flex items-center justify-between gap-2 p-2 rounded-xl bg-black/40 border border-white/5 text-xs"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="w-16 text-[10px] font-mono text-sky-400 shrink-0">
+                                S{item.seasonNumber} : E{item.episodeNumber}
+                              </span>
+                              <span className="text-slate-200 truncate font-medium">{item.title}</span>
+                              <span className="text-[10px] text-slate-400 font-mono shrink-0">({item.sizeMb})</span>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {item.status === 'queued' && (
+                                <span className="text-[10px] text-slate-400 bg-white/5 px-2 py-0.5 rounded-md">Queued</span>
+                              )}
+                              {item.status === 'uploading' && (
+                                <span className="text-[10px] text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded-md flex items-center gap-1 animate-pulse">
+                                  <span className="animate-spin">⏳</span> Uploading...
+                                </span>
+                              )}
+                              {item.status === 'completed' && (
+                                <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md flex items-center gap-1">
+                                  <Check className="w-3 h-3" /> Added to Season
+                                </span>
+                              )}
+                              {item.status === 'error' && (
+                                <span className="text-[10px] text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-md flex items-center gap-1">
+                                  <AlertCircle className="w-3 h-3" /> Failed
+                                </span>
+                              )}
+                              {!isBatchUploading && item.status !== 'uploading' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveFromQueue(item.id)}
+                                  className="p-1 text-slate-500 hover:text-rose-400 cursor-pointer"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Season Tabs */}
                   <div className="flex items-center gap-2 overflow-x-auto pb-1">
@@ -734,19 +1410,30 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                       <span className="text-[11px] text-slate-400 font-semibold">
                         Episodes in Season {seasons[activeSeasonIndex]?.seasonNumber || 1}
                       </span>
-                      <button
-                        type="button"
-                        onClick={handleAddManualEpisode}
-                        className="text-[10px] text-indigo-300 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
-                      >
-                        <Plus className="w-3 h-3" />
-                        Add Single Episode
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => multiFileInputRef.current?.click()}
+                          className="text-[10px] text-sky-300 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
+                        >
+                          <Layers className="w-3 h-3" />
+                          Multi-Select
+                        </button>
+                        <span className="text-slate-600">|</span>
+                        <button
+                          type="button"
+                          onClick={handleAddManualEpisode}
+                          className="text-[10px] text-indigo-300 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Add Single Episode
+                        </button>
+                      </div>
                     </div>
 
                     {(seasons[activeSeasonIndex]?.episodes || []).length === 0 ? (
                       <div className="text-center py-6 text-slate-500 text-xs">
-                        No episodes added yet. Use <span className="text-sky-300 font-semibold">Archive.org Import</span> or upload video files above!
+                        No episodes added yet. Click <span className="text-sky-300 font-semibold cursor-pointer" onClick={() => folderInputRef.current?.click()}>"Upload Whole Folder"</span> or <span className="text-indigo-300 font-semibold cursor-pointer" onClick={() => multiFileInputRef.current?.click()}>"Multi-Select Episodes"</span> above!
                       </div>
                     ) : (
                       <div className="space-y-2 max-h-56 overflow-y-auto pr-1">

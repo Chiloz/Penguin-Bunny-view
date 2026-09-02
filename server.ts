@@ -121,14 +121,15 @@ app.post('/api/archive/inspect', async (req: Request, res: Response) => {
   }
 });
 
-// Method A: Upload video directly to Internet Archive S3
-app.post('/api/archive/upload', upload.single('videoFile'), async (req: Request, res: Response) => {
+// Method A: Upload video or image directly to Internet Archive S3
+app.post('/api/archive/upload', upload.any(), async (req: Request, res: Response) => {
   try {
-    const file = req.file;
+    const files = req.files as Express.Multer.File[];
+    const file = files && files.length > 0 ? files[0] : req.file;
     const { title, seriesName, seasonNumber, episodeNumber, mediaType } = req.body;
 
     if (!file) {
-      res.status(400).json({ error: 'No video file provided' });
+      res.status(400).json({ error: 'No file provided for upload' });
       return;
     }
 
@@ -137,9 +138,13 @@ app.post('/api/archive/upload', upload.single('videoFile'), async (req: Request,
       return;
     }
 
+    const isImage = file.mimetype.startsWith('image/');
+    const archiveMediaType = isImage ? 'image' : 'movies';
+    const archiveCollection = isImage ? 'opensource_image' : 'opensource_movies';
+
     // Generate safe item identifier on Archive.org
     // Format: penguin-view-[name]-[timestamp]
-    const baseSlug = (seriesName || title || 'video')
+    const baseSlug = (seriesName || title || (isImage ? 'poster' : 'video'))
       .toLowerCase()
       .replace(/[^a-z0-9]/g, '-')
       .replace(/-+/g, '-')
@@ -152,7 +157,7 @@ app.post('/api/archive/upload', upload.single('videoFile'), async (req: Request,
     const cleanFilename = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
     const s3Url = `https://s3.us.archive.org/${identifier}/${encodeURIComponent(cleanFilename)}`;
 
-    console.log(`Starting Archive.org S3 upload to: ${s3Url}`);
+    console.log(`Starting Archive.org S3 upload (${archiveMediaType}) to: ${s3Url}`);
 
     // Upload to Archive.org using their S3 protocol PUT
     const s3Response = await fetch(s3Url, {
@@ -160,11 +165,11 @@ app.post('/api/archive/upload', upload.single('videoFile'), async (req: Request,
       headers: {
         'Authorization': `LOW ${ARCHIVE_ACCESS_KEY}:${ARCHIVE_SECRET_KEY}`,
         'x-archive-auto-make-bucket': '1',
-        'x-archive-meta-mediatype': 'movies',
-        'x-archive-meta-collection': 'opensource_movies',
-        'x-archive-meta-title': title || seriesName || 'Penguin View Video',
+        'x-archive-meta-mediatype': archiveMediaType,
+        'x-archive-meta-collection': archiveCollection,
+        'x-archive-meta-title': title || seriesName || (isImage ? 'Penguin View Poster' : 'Penguin View Video'),
         'x-archive-meta-creator': 'Penguin View Community',
-        'Content-Type': file.mimetype || 'video/mp4',
+        'Content-Type': file.mimetype || (isImage ? 'image/jpeg' : 'video/mp4'),
         'Content-Length': file.size.toString()
       },
       body: file.buffer
@@ -188,7 +193,8 @@ app.post('/api/archive/upload', upload.single('videoFile'), async (req: Request,
       filename: cleanFilename,
       streamUrl,
       downloadUrl: streamUrl,
-      mediaType: mediaType || 'movie',
+      isImage,
+      mediaType: mediaType || (isImage ? 'image' : 'movie'),
       seasonNumber: seasonNumber ? parseInt(seasonNumber, 10) : 1,
       episodeNumber: episodeNumber ? parseInt(episodeNumber, 10) : 1
     });

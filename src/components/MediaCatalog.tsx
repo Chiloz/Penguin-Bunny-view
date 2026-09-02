@@ -17,7 +17,8 @@ import {
   CheckCircle2,
   Download,
   UploadCloud,
-  ChevronRight
+  ChevronRight,
+  ExternalLink
 } from 'lucide-react';
 import { MediaItem, MediaEpisode, UserProfile } from '../types';
 import { db } from '../firebase';
@@ -136,7 +137,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
 }) => {
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [selectedCategory, setSelectedCategory] = useState<'all' | 'movie' | 'series' | 'anime'>('all');
+  const [selectedCategory, setSelectedCategory] = useState<'all' | 'movie' | 'series' | 'anime' | 'my_uploads'>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Selected series for Folder View
@@ -194,7 +195,10 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
 
   // Filter items based on category and search query
   const filteredItems = mediaItems.filter((item) => {
-    if (selectedCategory !== 'all' && item.type !== selectedCategory) {
+    if (selectedCategory === 'my_uploads') {
+      const isMine = item.uploadedByUid === currentUser.uid || (isMasterAdmin && item.uploadedByUid === 'system');
+      if (!isMine) return false;
+    } else if (selectedCategory !== 'all' && item.type !== selectedCategory) {
       return false;
     }
     if (searchQuery.trim()) {
@@ -211,6 +215,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
   const moviesCount = mediaItems.filter(i => i.type === 'movie').length;
   const seriesCount = mediaItems.filter(i => i.type === 'series').length;
   const animeCount = mediaItems.filter(i => i.type === 'anime').length;
+  const myUploadsCount = mediaItems.filter(i => i.uploadedByUid === currentUser.uid || (isMasterAdmin && i.uploadedByUid === 'system')).length;
 
   // Handle starting a movie watch party directly
   const handleStartMovieParty = (movie: MediaItem) => {
@@ -317,6 +322,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
             { id: 'movie', label: '🎬 Movies', count: moviesCount },
             { id: 'series', label: '📺 TV Series', count: seriesCount },
             { id: 'anime', label: '⛩️ Anime', count: animeCount },
+            { id: 'my_uploads', label: '📤 My Uploads', count: myUploadsCount },
           ].map((cat) => (
             <button
               key={cat.id}
@@ -331,6 +337,18 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
               <span className="text-[10px] font-mono opacity-70">({cat.count})</span>
             </button>
           ))}
+
+          {/* Archive.org External Collection Browser */}
+          <a
+            href="https://archive.org/search?query=penguin-view"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3 py-2 rounded-2xl text-xs font-medium text-slate-400 hover:text-sky-300 bg-white/5 hover:bg-white/10 border border-white/10 transition-all flex items-center gap-1.5 whitespace-nowrap"
+            title="Browse all files uploaded to the community Internet Archive collection"
+          >
+            <ExternalLink className="w-3.5 h-3.5 text-sky-400" />
+            <span>Archive.org S3</span>
+          </a>
         </div>
 
         {/* Search Input */}

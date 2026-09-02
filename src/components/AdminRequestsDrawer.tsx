@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, 
   Check, 
@@ -10,7 +10,10 @@ import {
   XCircle, 
   Mail, 
   Sparkles,
-  AlertCircle
+  AlertCircle,
+  ArrowLeft,
+  ChevronLeft,
+  SlidersHorizontal
 } from 'lucide-react';
 import { MediaRequest, UserProfile } from '../types';
 import { db } from '../firebase';
@@ -57,6 +60,40 @@ export const AdminRequestsDrawer: React.FC<AdminRequestsDrawerProps> = ({
     return () => unsubscribe();
   }, [isOpen]);
 
+  // Keyboard Escape listener
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  // Touch slide / swipe to close
+  const touchStartXRef = useRef<number | null>(null);
+  const touchCurrentXRef = useRef<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartXRef.current = e.touches[0].clientX;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    touchCurrentXRef.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = () => {
+    if (touchStartXRef.current !== null && touchCurrentXRef.current !== null) {
+      const deltaX = touchCurrentXRef.current - touchStartXRef.current;
+      // Swiping to the right by more than 50px closes the drawer
+      if (deltaX > 50) {
+        onClose();
+      }
+    }
+    touchStartXRef.current = null;
+    touchCurrentXRef.current = null;
+  };
+
   if (!isOpen) return null;
 
   // Grant uploader role to a user
@@ -96,30 +133,58 @@ export const AdminRequestsDrawer: React.FC<AdminRequestsDrawerProps> = ({
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-md animate-in fade-in duration-200 font-sans">
-      <div className="w-full max-w-md h-full bg-[#080d1a] border-l border-white/10 flex flex-col justify-between shadow-2xl animate-in slide-in-from-right duration-300">
+    <div 
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      className="fixed inset-0 z-[100] flex justify-end bg-black/80 backdrop-blur-md animate-in fade-in duration-200 font-sans"
+    >
+      <div 
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        className="w-full max-w-md h-full bg-[#080d1a] border-l border-white/10 flex flex-col justify-between shadow-2xl animate-in slide-in-from-right duration-300 relative z-[101]"
+      >
         
-        {/* Header */}
-        <div className="p-5 border-b border-white/10 flex items-center justify-between">
+        {/* Top Floating Slide-To-Close Handle on Mobile */}
+        <div className="pt-2 pb-1 flex flex-col items-center justify-center cursor-grab active:cursor-grabbing border-b border-white/5 bg-[#0b1224]/80">
+          <div className="w-12 h-1 rounded-full bg-white/20 hover:bg-white/40 transition-colors" />
+          <span className="text-[9px] text-slate-500 font-mono tracking-wider mt-1">
+            Slide right or tap back to close
+          </span>
+        </div>
+
+        {/* Header with Back Button and Close */}
+        <div className="p-4 sm:p-5 border-b border-white/10 flex items-center justify-between bg-[#080d1a]">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-300 flex items-center justify-center">
-              <ShieldCheck className="w-5 h-5" />
+            <button
+              onClick={onClose}
+              className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-sky-300 hover:text-white transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer border border-white/10 active:scale-95 shadow-sm"
+              title="Back to Media Catalog"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
+
+            <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-300 flex items-center justify-center">
+              <ShieldCheck className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white font-display">
-                Admin Request Center
+              <h3 className="text-xs sm:text-sm font-bold text-white font-display">
+                Admin Center
               </h3>
-              <p className="text-[11px] text-slate-400">
-                User title requests & uploader permissions
+              <p className="text-[10px] text-slate-400">
+                Title &amp; upload rights
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+            className="p-2 rounded-xl bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white transition-colors cursor-pointer border border-white/5"
+            title="Close panel"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 

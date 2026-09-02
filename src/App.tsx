@@ -9,6 +9,7 @@ import { VideoPlayer } from './components/VideoPlayer';
 import { LiquidGlassCard } from './components/LiquidGlassCard';
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { FloatingNotificationBanner } from './components/FloatingNotificationBanner';
+import { PullToRefresh } from './components/PullToRefresh';
 import { Sparkles, Film } from 'lucide-react';
 
 export default function App() {
@@ -193,81 +194,83 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen bg-[#060911] relative overflow-x-hidden transition-colors duration-500 ${getThemeBackgroundClass()}`}>
-      
-      {/* Real-time In-App Push Notification Alert Banner */}
-      <FloatingNotificationBanner />
+    <PullToRefresh>
+      <div className={`min-h-screen bg-[#060911] relative overflow-x-hidden transition-colors duration-500 ${getThemeBackgroundClass()}`}>
+        
+        {/* Real-time In-App Push Notification Alert Banner */}
+        <FloatingNotificationBanner />
 
-      {/* Dynamic Animated Canvas Background (Liquid, Bubbles, Fire, Cyber, Emerald, etc.) */}
-      <AnimatedBackground theme={profile.activeTheme || 'liquid'} customBgImage={profile.customBgImage} />
+        {/* Dynamic Animated Canvas Background (Liquid, Bubbles, Fire, Cyber, Emerald, etc.) */}
+        <AnimatedBackground theme={profile.activeTheme || 'liquid'} customBgImage={profile.customBgImage} />
 
-      {/* Absolute Ambient Glows mapped to User's Color Preference */}
-      <div className="absolute top-0 right-10 w-[500px] h-[500px] rounded-full blur-[150px] opacity-15 pointer-events-none transition-all duration-700"
-        style={{
-          background: profile.themeColor === 'sky' ? '#38bdf8' :
-                      profile.themeColor === 'rose' ? '#f43f5e' :
-                      profile.themeColor === 'emerald' ? '#10b981' :
-                      profile.themeColor === 'amber' ? '#f59e0b' :
-                      profile.themeColor === 'purple' ? '#a855f7' :
-                      profile.themeColor === 'autumn' ? '#ea580c' : '#14b8a6'
-        }}
-      />
-      
-      {!activeRoomId && (
-        <header className="relative z-20 border-b border-white/5 py-4 px-6"
+        {/* Absolute Ambient Glows mapped to User's Color Preference */}
+        <div className="absolute top-0 right-10 w-[500px] h-[500px] rounded-full blur-[150px] opacity-15 pointer-events-none transition-all duration-700"
           style={{
-            background: 'rgba(255, 255, 255, 0.02)',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)'
+            background: profile.themeColor === 'sky' ? '#38bdf8' :
+                        profile.themeColor === 'rose' ? '#f43f5e' :
+                        profile.themeColor === 'emerald' ? '#10b981' :
+                        profile.themeColor === 'amber' ? '#f59e0b' :
+                        profile.themeColor === 'purple' ? '#a855f7' :
+                        profile.themeColor === 'autumn' ? '#ea580c' : '#14b8a6'
           }}
-        >
-          <div className="max-w-6xl mx-auto flex items-center justify-between">
-            <div 
-              onClick={handleLeaveRoom}
-              className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition-opacity"
-            >
-              <span className="text-2xl animate-pulse">🐧</span>
-              <div>
-                <h1 className="text-lg font-extrabold font-display tracking-tight text-white">
-                  Penguin View
-                </h1>
-                <p className="text-[9px] text-slate-400 uppercase tracking-widest font-semibold font-mono">
-                  Video Sync Engine
-                </p>
+        />
+        
+        {!activeRoomId && (
+          <header className="relative z-20 border-b border-white/5 py-4 px-6"
+            style={{
+              background: 'rgba(255, 255, 255, 0.02)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)'
+            }}
+          >
+            <div className="max-w-6xl mx-auto flex items-center justify-between">
+              <div 
+                onClick={handleLeaveRoom}
+                className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition-opacity"
+              >
+                <span className="text-2xl animate-pulse">🐧</span>
+                <div>
+                  <h1 className="text-lg font-extrabold font-display tracking-tight text-white">
+                    Penguin View
+                  </h1>
+                  <p className="text-[9px] text-slate-400 uppercase tracking-widest font-semibold font-mono">
+                    Video Sync Engine
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-300 bg-white/5 border border-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 backdrop-blur-md">
+                  {profile.profilePic && profile.profilePic.startsWith('data:image/') ? (
+                    <img src={profile.profilePic} alt={profile.name} className="w-5 h-5 rounded-full object-cover border border-white/20" />
+                  ) : (
+                    <span className="text-sm">{profile.profilePic || '🐧'}</span>
+                  )}
+                  <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-pulse" />
+                  {profile.name}
+                </span>
               </div>
             </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-300 bg-white/5 border border-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 backdrop-blur-md">
-                {profile.profilePic && profile.profilePic.startsWith('data:image/') ? (
-                  <img src={profile.profilePic} alt={profile.name} className="w-5 h-5 rounded-full object-cover border border-white/20" />
-                ) : (
-                  <span className="text-sm">{profile.profilePic || '🐧'}</span>
-                )}
-                <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-pulse" />
-                {profile.name}
-              </span>
-            </div>
-          </div>
-        </header>
-      )}
-
-      <main className={`relative z-10 min-h-[80vh] ${activeRoomId ? 'py-2 px-0 sm:py-6 sm:px-4' : 'py-6 px-4'}`}>
-        {activeRoomId ? (
-          <VideoPlayer 
-            roomId={activeRoomId} 
-            currentUser={profile} 
-            onLeave={handleLeaveRoom} 
-          />
-        ) : (
-          <Dashboard 
-            currentUser={profile} 
-            onLogout={() => auth.signOut()} 
-            onStartRoom={handleStartRoom}
-            onJoinRoom={handleJoinRoom}
-          />
+          </header>
         )}
-      </main>
-    </div>
+
+        <main className={`relative min-h-[80vh] ${activeRoomId ? 'py-2 px-0 sm:py-6 sm:px-4' : 'py-6 px-4'}`}>
+          {activeRoomId ? (
+            <VideoPlayer 
+              roomId={activeRoomId} 
+              currentUser={profile} 
+              onLeave={handleLeaveRoom} 
+            />
+          ) : (
+            <Dashboard 
+              currentUser={profile} 
+              onLogout={() => auth.signOut()} 
+              onStartRoom={handleStartRoom}
+              onJoinRoom={handleJoinRoom}
+            />
+          )}
+        </main>
+      </div>
+    </PullToRefresh>
   );
 }
