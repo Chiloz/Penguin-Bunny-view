@@ -51,6 +51,7 @@ interface MiniChatDrawerProps {
   currentUser: UserProfile;
   friendsProfiles: UserProfile[];
   onStartRoom: (roomIdOrTitle: string) => void;
+  onJoinRoom?: (roomId: string) => void;
   isOpen: boolean;
   onClose: () => void;
   initialSelectedFriendId?: string | null;
@@ -157,6 +158,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
   currentUser,
   friendsProfiles,
   onStartRoom,
+  onJoinRoom,
   isOpen,
   onClose,
   initialSelectedFriendId = null,
@@ -776,7 +778,11 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
                         <button
                           onClick={() => {
                             if (msg.roomId) {
-                              onStartRoom(msg.roomId);
+                              if (onJoinRoom) {
+                                onJoinRoom(msg.roomId);
+                              } else {
+                                onStartRoom(msg.roomId);
+                              }
                               onClose();
                             }
                           }}

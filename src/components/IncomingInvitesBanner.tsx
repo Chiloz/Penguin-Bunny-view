@@ -8,11 +8,13 @@ import { LiquidGlassCard } from './LiquidGlassCard';
 interface IncomingInvitesBannerProps {
   currentUser: UserProfile;
   onStartRoom: (roomId: string) => void;
+  onJoinRoom?: (roomId: string) => void;
 }
 
 export const IncomingInvitesBanner: React.FC<IncomingInvitesBannerProps> = ({
   currentUser,
-  onStartRoom
+  onStartRoom,
+  onJoinRoom
 }) => {
   const [invites, setInvites] = useState<RoomInvite[]>([]);
 
@@ -50,7 +52,11 @@ export const IncomingInvitesBanner: React.FC<IncomingInvitesBannerProps> = ({
     } catch (err) {
       console.error("Error accepting invite:", err);
     }
-    onStartRoom(invite.roomId);
+    if (onJoinRoom) {
+      onJoinRoom(invite.roomId);
+    } else {
+      onStartRoom(invite.roomId);
+    }
   };
 
   const handleDeclineInvite = async (inviteId: string) => {

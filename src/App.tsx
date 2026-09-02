@@ -72,28 +72,62 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     if (roomParam) {
-      setActiveRoomId(roomParam);
+      const cleanRoom = roomParam.trim();
+      sessionStorage.setItem('pendingRoomId', cleanRoom);
+      setActiveRoomId(cleanRoom);
     }
   }, []);
 
-  // Action: Launch a Sync Playback Room
-  const handleStartRoom = async (movieTitle: string) => {
+  // Ensure pending room is joined once user and profile are loaded
+  useEffect(() => {
+    if (profile && !activeRoomId) {
+      const pending = sessionStorage.getItem('pendingRoomId');
+      if (pending) {
+        sessionStorage.removeItem('pendingRoomId');
+        setActiveRoomId(pending);
+      }
+    }
+  }, [profile, activeRoomId]);
+
+  // Action: Launch a Sync Playback Room (Supports Local file OR Cloud Stream link)
+  const handleStartRoom = async (
+    movieTitle: string,
+    streamUrl?: string,
+    mediaItem?: any,
+    episode?: any,
+    seasonNumber?: number
+  ) => {
     if (!profile) return;
 
     // Generate random room document ID
     const randomId = doc(collection(db, 'rooms')).id;
     const roomRef = doc(db, 'rooms', randomId);
 
-    const roomPayload = {
+    const displayName = episode?.title 
+      ? `${movieTitle} - S${seasonNumber || 1}E${episode.episodeNumber || 1}: ${episode.title}`
+      : movieTitle;
+
+    const roomPayload: any = {
       roomId: randomId,
       hostId: profile.uid,
       hostName: profile.name,
-      videoName: movieTitle,
+      videoName: displayName,
       isPlaying: false,
       currentTime: 0,
       lastUpdatedAt: serverTimestamp(),
       senderId: profile.uid
     };
+
+    if (streamUrl) {
+      roomPayload.streamUrl = streamUrl;
+    }
+    if (mediaItem?.id) {
+      roomPayload.mediaId = mediaItem.id;
+    }
+    if (episode?.title) {
+      roomPayload.currentEpisodeName = displayName;
+      roomPayload.currentEpisodeIndex = (episode.episodeNumber || 1) - 1;
+    }
 
     const path = `rooms/${randomId}`;
     try {
@@ -109,9 +143,18 @@ export default function App() {
     }
   };
 
+  const handleJoinRoom = (roomId: string) => {
+    if (!roomId) return;
+    const cleanId = roomId.trim();
+    setActiveRoomId(cleanId);
+    const newUrl = `${window.location.origin}/?room=${cleanId}`;
+    window.history.pushState({ path: newUrl }, '', newUrl);
+  };
+
   const handleLeaveRoom = () => {
     // Clear room state and URL query parameter
     setActiveRoomId(null);
+    sessionStorage.removeItem('pendingRoomId');
     const cleanUrl = window.location.origin + window.location.pathname;
     window.history.pushState({ path: cleanUrl }, '', cleanUrl);
   };
@@ -219,9 +262,9 @@ export default function App() {
         ) : (
           <Dashboard 
             currentUser={profile} 
-            onLogout={() => console.log('Log out')} 
+            onLogout={() => auth.signOut()} 
             onStartRoom={handleStartRoom}
-            onJoinRoom={setActiveRoomId}
+            onJoinRoom={handleJoinRoom}
           />
         )}
       </main>

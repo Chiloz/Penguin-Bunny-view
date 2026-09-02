@@ -8,6 +8,7 @@ export interface UserProfile {
   activeTheme?: 'sky' | 'liquid' | 'bubbles' | 'fire' | 'cyber' | 'emerald' | 'green' | 'yellow' | 'orange' | 'gold' | 'silver' | 'autumn' | 'fall'; // Visual background theme mode
   friendCode: string; // Unique 6-character code
   friends: string[]; // List of friend uids
+  role?: 'master_admin' | 'uploader' | 'viewer'; // User role for media uploads & management
 }
 
 export interface WatchListItem {
@@ -67,6 +68,73 @@ export interface Room {
   currentEpisodeIndex?: number;
   currentEpisodeName?: string;
   totalEpisodesCount?: number;
+  // Hybrid sync & Cloud Stream fields
+  streamUrl?: string; // Direct cloud stream URL (Archive.org, R2, Drive, MP4, HLS)
+  mediaType?: 'movie' | 'series' | 'anime' | 'custom';
+  mediaId?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  isLocalFile?: boolean;
+}
+
+export interface MediaEpisode {
+  episodeNumber: number;
+  title: string;
+  streamUrl: string;
+  downloadUrl?: string;
+  duration?: number; // duration in minutes or seconds
+  thumbnailUrl?: string;
+}
+
+export interface MediaSeason {
+  seasonNumber: number;
+  seasonTitle?: string;
+  episodes: MediaEpisode[];
+}
+
+export interface MediaItem {
+  id: string;
+  type: 'movie' | 'series' | 'anime';
+  title: string;
+  description?: string;
+  posterUrl?: string;
+  backdropUrl?: string;
+  trailerUrl?: string; // YouTube / MP4 trailer link
+  genres: string[];
+  releaseYear?: number;
+  rating?: number; // 0 to 10 or 1 to 5
+  status?: 'completed' | 'ongoing';
+  
+  // For Movies:
+  streamUrl?: string;
+  duration?: number; // in minutes
+
+  // For Anime / Series:
+  audioLang?: string; // e.g. "Japanese (Eng Sub)", "Dual Audio", "English"
+  subtitles?: string[];
+  seasons?: MediaSeason[];
+
+  // Storage & Attribution:
+  storageProvider?: 'archive_org' | 'google_drive' | 'cloudflare_r2' | 'direct_url';
+  archiveItemId?: string;
+  uploadedByUid: string;
+  uploadedByName: string;
+  createdAt: any;
+  updatedAt?: any;
+}
+
+export interface MediaRequest {
+  id: string;
+  userUid: string;
+  userName: string;
+  userEmail: string;
+  type: 'request_title' | 'request_uploader_role';
+  category?: 'movie' | 'series' | 'anime';
+  titleRequested?: string;
+  note?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: any;
+  resolvedAt?: any;
 }
 
 export interface RoomParticipant {

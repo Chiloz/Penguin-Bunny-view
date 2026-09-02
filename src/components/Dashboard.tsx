@@ -16,6 +16,7 @@ import { SharedWatchLists } from './SharedWatchLists';
 import { MiniChatDrawer } from './MiniChatDrawer';
 import { IncomingInvitesBanner } from './IncomingInvitesBanner';
 import { InstallAppModal } from './InstallAppModal';
+import { MediaCatalog } from './MediaCatalog';
 import { 
   User as UserIcon, 
   Palette, 
@@ -30,6 +31,7 @@ import {
   UserCheck,
   ChevronRight,
   Film,
+  Clapperboard,
   Settings,
   HelpCircle,
   Play,
@@ -61,7 +63,7 @@ import {
 interface DashboardProps {
   currentUser: UserProfile;
   onLogout: () => void;
-  onStartRoom: (movieTitle: string) => void;
+  onStartRoom: (movieTitle: string, streamUrl?: string, mediaItem?: any, episode?: any, seasonNumber?: number) => void;
   onJoinRoom: (roomId: string) => void;
 }
 
@@ -97,7 +99,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onJoinRoom
 }) => {
   // Navigation tab
-  const [activeTab, setActiveTab] = useState<'watch' | 'settings'>('watch');
+  const [activeTab, setActiveTab] = useState<'catalog' | 'watch' | 'settings'>('catalog');
   const [watchSubTab, setWatchSubTab] = useState<'personal' | 'shared'>('personal');
 
   // Mini Chat Box State
@@ -494,40 +496,67 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
-      {/* High-Fidelity Sliding Tab Controls to save space on Mobile */}
-      <div className="flex items-center justify-center sm:justify-start gap-1 bg-white/5 border border-white/5 p-1 rounded-2xl max-w-sm">
+      {/* High-Fidelity Sliding Tab Controls */}
+      <div className="flex items-center justify-center sm:justify-start gap-1.5 bg-white/5 border border-white/5 p-1 rounded-2xl max-w-md">
+        <button
+          onClick={() => setActiveTab('catalog')}
+          className={`flex-1 sm:flex-initial px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'catalog'
+              ? 'bg-gradient-to-r from-sky-400 to-indigo-500 text-white shadow-lg border border-white/10'
+              : 'text-slate-400 hover:text-white hover:bg-white/[0.02]'
+          }`}
+        >
+          <Clapperboard className="w-4 h-4 text-sky-200" />
+          <span>Media Hub</span>
+        </button>
         <button
           onClick={() => setActiveTab('watch')}
-          className={`flex-1 sm:flex-initial px-5 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+          className={`flex-1 sm:flex-initial px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
             activeTab === 'watch'
               ? 'bg-white/10 text-white shadow border border-white/10'
               : 'text-slate-400 hover:text-white hover:bg-white/[0.02]'
           }`}
         >
           <Tv className="w-4 h-4 text-sky-400" />
-          Watch Center
+          <span>Watch Rooms</span>
         </button>
         <button
           onClick={() => setActiveTab('settings')}
-          className={`flex-1 sm:flex-initial px-5 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+          className={`flex-1 sm:flex-initial px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
             activeTab === 'settings'
               ? 'bg-white/10 text-white shadow border border-white/10'
               : 'text-slate-400 hover:text-white hover:bg-white/[0.02]'
           }`}
         >
           <Settings className="w-4 h-4 text-indigo-400" />
-          Penguin Settings
+          <span>Penguin Settings</span>
         </button>
       </div>
 
       {/* Conditional Rendering of Tabs */}
-      {activeTab === 'watch' ? (
+      {activeTab === 'catalog' ? (
+        <div className="space-y-6">
+          {/* Real-time Incoming Room Invites Banner */}
+          <IncomingInvitesBanner
+            currentUser={currentUser}
+            onStartRoom={onStartRoom}
+            onJoinRoom={onJoinRoom}
+          />
+
+          {/* Media Catalog Hub */}
+          <MediaCatalog 
+            currentUser={currentUser}
+            onStartRoom={onStartRoom}
+          />
+        </div>
+      ) : activeTab === 'watch' ? (
         <div className="space-y-6">
 
           {/* Real-time Incoming Room Invites Banner */}
           <IncomingInvitesBanner
             currentUser={currentUser}
             onStartRoom={onStartRoom}
+            onJoinRoom={onJoinRoom}
           />
           
           {/* Section 1: Launch Sync Session & Snowy Join Form */}
@@ -1136,6 +1165,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         currentUser={currentUser}
         friendsProfiles={friendsProfiles}
         onStartRoom={onStartRoom}
+        onJoinRoom={onJoinRoom}
         isOpen={isChatOpen}
         onClose={() => setIsChatOpen(false)}
         initialSelectedFriendId={selectedChatFriendId}

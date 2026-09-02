@@ -82,6 +82,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Video source & Playlist state
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string>('');
+  const [hybridMode, setHybridMode] = useState<'cloud' | 'local'>('cloud');
+  const userOptedLocalRef = useRef<boolean>(false);
   const [playlistFiles, setPlaylistFiles] = useState<File[]>([]);
   const [currentEpisodeIndex, setCurrentEpisodeIndex] = useState<number>(0);
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -307,6 +309,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       setRoom(roomData);
       setLoading(false);
 
+      // Auto-load cloud stream URL if present and user has not switched to local file mode
+      if (roomData.streamUrl && !videoFile && !userOptedLocalRef.current) {
+        setVideoUrl(prev => {
+          if (!prev || (prev !== roomData.streamUrl && !prev.startsWith('blob:'))) {
+            return roomData.streamUrl!;
+          }
+          return prev;
+        });
+        setHybridMode('cloud');
+      }
+
       // Episode switch synchronization
       if (
         roomData.currentEpisodeIndex !== undefined && 
@@ -442,8 +455,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     if (videoFiles.length === 0) return;
 
     // Natural alphanumeric sorting (Episode 1, Episode 2, Episode 10...)
-    videoFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    videoFiles.sort((a, b) => a.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' }));
 
+    userOptedLocalRef.current = true;
+    setHybridMode('local');
     setPlaylistFiles(videoFiles);
     loadSelectedEpisodeFile(videoFiles[0], 0, true, videoFiles.length);
   };
@@ -768,6 +783,37 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       <div className="max-w-xl mx-auto px-4 py-12 text-center font-sans">
         <LiquidGlassCard intensity="glass" className="space-y-6 py-10">
           
+          {room?.streamUrl && (
+            <div className="p-4 bg-sky-500/10 border border-sky-400/30 rounded-2xl text-left space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-sky-300 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  Cloud Stream Ready
+                </span>
+                <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  Direct Play
+                </span>
+              </div>
+              <p className="text-white text-sm font-bold line-clamp-1">
+                {room.currentEpisodeName || room.videoName || 'Cloud Video'}
+              </p>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Stream directly without downloading, or pick your local copy below for <strong>Data Saver</strong> mode (0 MB consumed)!
+              </p>
+              <button
+                onClick={() => {
+                  userOptedLocalRef.current = false;
+                  setHybridMode('cloud');
+                  setVideoUrl(room.streamUrl!);
+                }}
+                className="w-full py-2.5 bg-gradient-to-r from-sky-400 to-indigo-500 hover:from-sky-300 hover:to-indigo-400 text-white rounded-xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                Stream Cloud Video Now
+              </button>
+            </div>
+          )}
+
           <div 
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -784,10 +830,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
             <div className="space-y-1.5">
               <h3 className="text-lg font-bold text-white font-display">
-                {isDragging ? 'Drop Your Folder or Videos Here!' : 'Select Anime Folder or Video File'}
+                {isDragging ? 'Drop Your Folder or Videos Here!' : (room?.streamUrl ? 'Or Use Local File (Data Saver)' : 'Select Anime Folder or Video File')}
               </h3>
               <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                You can select an entire anime series folder or individual video files. Watch together without re-creating rooms for every episode!
+                {room?.streamUrl 
+                  ? 'Pick your local copy of this episode or series to stay in 100% sync while consuming 0 MB of cellular data!'
+                  : 'You can select an entire anime series folder or individual video files. Watch together without re-creating rooms for every episode!'
+                }
               </p>
             </div>
 
@@ -957,6 +1006,47 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     <span>{activeMembers.length} Online</span>
                   </div>
                 )}
+
+                {/* Hybrid Sync Cloud vs Local Data Saver Toggle */}
+                {room?.streamUrl && (
+                  <button
+                    onClick={() => {
+                      if (hybridMode === 'cloud') {
+                        document.getElementById('hud-local-file-input')?.click();
+                      } else {
+                        userOptedLocalRef.current = false;
+                        setHybridMode('cloud');
+                        setVideoFile(null);
+                        setVideoUrl(room.streamUrl!);
+                      }
+                    }}
+                    className={`px-2.5 py-1.5 border rounded-xl flex items-center gap-1.5 backdrop-blur-md text-[10px] sm:text-xs font-semibold cursor-pointer transition-all ${
+                      hybridMode === 'local' 
+                        ? 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/40 text-emerald-300' 
+                        : 'bg-sky-500/20 hover:bg-sky-500/30 border-sky-400/40 text-sky-200'
+                    }`}
+                    title={hybridMode === 'local' ? 'Data Saver Active (0 MB used). Tap to switch to Cloud Stream.' : 'Streaming from Cloud. Tap to pick a local file to save data.'}
+                  >
+                    {hybridMode === 'local' ? (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>💾 Data Saver (0 MB)</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-ping" />
+                        <span>☁️ Cloud Stream</span>
+                      </>
+                    )}
+                  </button>
+                )}
+                <input 
+                  id="hud-local-file-input" 
+                  type="file" 
+                  accept="video/*" 
+                  className="hidden" 
+                  onChange={handleFileChange} 
+                />
               </div>
 
               <div className="flex gap-2">
