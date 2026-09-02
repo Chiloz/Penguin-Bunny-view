@@ -50,7 +50,8 @@ import {
   Bell,
   Volume2,
   Leaf,
-  Trees
+  Trees,
+  PartyPopper
 } from 'lucide-react';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase';
@@ -59,12 +60,14 @@ import {
   requestNotificationPermission, 
   playNotificationChime 
 } from '../utils/notifications';
+import { formatFriendlyName } from '../utils/greetingEngine';
 
 interface DashboardProps {
   currentUser: UserProfile;
   onLogout: () => void;
   onStartRoom: (movieTitle: string, streamUrl?: string, mediaItem?: any, episode?: any, seasonNumber?: number) => void;
   onJoinRoom: (roomId: string) => void;
+  onOpenWelcome?: () => void;
 }
 
 const EMOJI_PRESETS = ['🐧', '🐨', '🦊', '🐯', '🦁', '🐼', '🐸', '🐙', '🦄', '🦖', '🍿', '🎬'];
@@ -96,7 +99,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   currentUser, 
   onLogout,
   onStartRoom,
-  onJoinRoom
+  onJoinRoom,
+  onOpenWelcome
 }) => {
   // Navigation tab
   const [activeTab, setActiveTab] = useState<'catalog' | 'watch' | 'settings'>('catalog');
@@ -446,11 +450,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div>
               <div className="flex items-center gap-2 justify-center md:justify-start">
                 <h2 className="text-xl md:text-2xl font-extrabold font-display text-white tracking-tight">
-                  Hi, {currentUser.name}!
+                  Hi, {formatFriendlyName(currentUser.name)}!
                 </h2>
                 <span className="text-[9px] px-2 py-0.5 rounded-full font-semibold font-mono uppercase tracking-wider text-sky-300 border border-sky-400/30 bg-sky-500/10">
                   ONLINE
                 </span>
+                {onOpenWelcome && (
+                  <button
+                    onClick={onOpenWelcome}
+                    className="text-[10px] px-2 py-0.5 rounded-full font-semibold text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/30 transition-all flex items-center gap-1 cursor-pointer hover:scale-105"
+                    title="View welcome greeting & fireworks!"
+                  >
+                    <PartyPopper className="w-3 h-3 text-amber-400" />
+                    <span>Greeting</span>
+                  </button>
+                )}
               </div>
               <p className="text-xs text-slate-400 mt-0.5 max-w-md font-light">
                 Ready to watch films? Synchronize movies locally and sync controls in real-time.
@@ -459,6 +473,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           <div className="flex flex-wrap gap-2 justify-center">
+            {onOpenWelcome && (
+              <button
+                onClick={onOpenWelcome}
+                className="px-3.5 py-2 text-xs font-bold text-amber-200 hover:text-white bg-gradient-to-r from-amber-500/20 via-orange-500/20 to-pink-500/20 hover:from-amber-500/30 hover:to-pink-500/30 border border-amber-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/10 hover:scale-105 active:scale-95"
+                title="View your personalized daily greeting & pop mini fireworks!"
+              >
+                <PartyPopper className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                <span>Daily Greeting 🎆</span>
+              </button>
+            )}
+
             <button
               onClick={() => setIsInstallModalOpen(true)}
               className="px-3.5 py-2 text-xs font-bold text-sky-200 hover:text-white bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 border border-sky-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-sky-500/10 hover:scale-105 active:scale-95"

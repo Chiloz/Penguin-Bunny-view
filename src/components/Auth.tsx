@@ -66,10 +66,12 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onDemoLogin }) => {
           handleFirestoreError(fsErr, OperationType.CREATE, path);
         }
         
+        sessionStorage.setItem('just_logged_in', 'true');
         onAuthSuccess(user.uid);
       } else {
         // Sign in user
         const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        sessionStorage.setItem('just_logged_in', 'true');
         onAuthSuccess(userCredential.user.uid);
       }
     } catch (err: any) {
@@ -125,6 +127,7 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onDemoLogin }) => {
         }
       }
 
+      sessionStorage.setItem('just_logged_in', 'true');
       onAuthSuccess(user.uid);
     } catch (err: any) {
       console.error(err);

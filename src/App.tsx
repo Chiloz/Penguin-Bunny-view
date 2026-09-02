@@ -10,6 +10,7 @@ import { LiquidGlassCard } from './components/LiquidGlassCard';
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { FloatingNotificationBanner } from './components/FloatingNotificationBanner';
 import { PullToRefresh } from './components/PullToRefresh';
+import { WelcomePopup } from './components/WelcomePopup';
 import { Sparkles, Film } from 'lucide-react';
 
 export default function App() {
@@ -19,6 +20,9 @@ export default function App() {
   
   // Navigation / Room State
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+
+  // Welcome Pop-up State
+  const [isWelcomeOpen, setIsWelcomeOpen] = useState<boolean>(false);
 
   // 1. Listen to Firebase Authentication state change
   useEffect(() => {
@@ -86,6 +90,25 @@ export default function App() {
       if (pending) {
         sessionStorage.removeItem('pendingRoomId');
         setActiveRoomId(pending);
+      }
+    }
+  }, [profile, activeRoomId]);
+
+  // Check and display Welcome Pop-up when user logs in
+  useEffect(() => {
+    if (profile && !activeRoomId) {
+      const welcomedKey = `pv_welcomed_${profile.uid}`;
+      const hasBeenWelcomed = sessionStorage.getItem(welcomedKey);
+      const justLoggedIn = sessionStorage.getItem('just_logged_in');
+
+      if (!hasBeenWelcomed || justLoggedIn === 'true') {
+        sessionStorage.setItem(welcomedKey, 'true');
+        sessionStorage.removeItem('just_logged_in');
+        // Slight delay so the UI paints first and the popup animates in cleanly with fireworks
+        const timer = setTimeout(() => {
+          setIsWelcomeOpen(true);
+        }, 400);
+        return () => clearTimeout(timer);
       }
     }
   }, [profile, activeRoomId]);
@@ -187,7 +210,8 @@ export default function App() {
         onAuthSuccess={(uid) => console.log('Auth success: ', uid)} 
         onDemoLogin={(guestName) => {
           const demoUid = `demo-${Math.random().toString(36).substr(2, 9)}`;
-          setUser({ uid: demoUid, displayName: guestName || 'Guest Penguin', isDemo: true });
+          sessionStorage.setItem('just_logged_in', 'true');
+          setUser({ uid: demoUid, displayName: guestName || 'Penguin21', isDemo: true });
         }}
       />
     );
@@ -199,6 +223,20 @@ export default function App() {
         
         {/* Real-time In-App Push Notification Alert Banner */}
         <FloatingNotificationBanner />
+
+        {/* Welcome Pop-up with Fireworks and Dynamic Greeting */}
+        <WelcomePopup 
+          currentUser={profile}
+          isOpen={isWelcomeOpen}
+          onClose={() => setIsWelcomeOpen(false)}
+          onExploreCatalog={() => {
+            setIsWelcomeOpen(false);
+            const catalogEl = document.getElementById('catalog-search-input');
+            if (catalogEl) {
+              catalogEl.focus();
+            }
+          }}
+        />
 
         {/* Dynamic Animated Canvas Background (Liquid, Bubbles, Fire, Cyber, Emerald, etc.) */}
         <AnimatedBackground theme={profile.activeTheme || 'liquid'} customBgImage={profile.customBgImage} />
@@ -240,15 +278,20 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-300 bg-white/5 border border-white/10 px-3 py-1.5 rounded-full flex items-center gap-2 backdrop-blur-md">
+                <button 
+                  onClick={() => setIsWelcomeOpen(true)}
+                  className="text-xs text-slate-300 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-400/40 px-3 py-1.5 rounded-full flex items-center gap-2 backdrop-blur-md cursor-pointer transition-all hover:scale-105"
+                  title="Click to view your welcome greeting & fireworks!"
+                >
                   {profile.profilePic && profile.profilePic.startsWith('data:image/') ? (
                     <img src={profile.profilePic} alt={profile.name} className="w-5 h-5 rounded-full object-cover border border-white/20" />
                   ) : (
                     <span className="text-sm">{profile.profilePic || '🐧'}</span>
                   )}
                   <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-pulse" />
-                  {profile.name}
-                </span>
+                  <span>{profile.name}</span>
+                  <span className="text-[10px] text-amber-300 font-medium">🎆</span>
+                </button>
               </div>
             </div>
           </header>
@@ -264,9 +307,13 @@ export default function App() {
           ) : (
             <Dashboard 
               currentUser={profile} 
-              onLogout={() => auth.signOut()} 
+              onLogout={() => {
+                sessionStorage.removeItem(`pv_welcomed_${profile.uid}`);
+                auth.signOut();
+              }} 
               onStartRoom={handleStartRoom}
               onJoinRoom={handleJoinRoom}
+              onOpenWelcome={() => setIsWelcomeOpen(true)}
             />
           )}
         </main>
