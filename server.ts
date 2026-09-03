@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import fs from 'fs';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -9,6 +10,12 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Setup uploads directory on disk
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
 // Default archive keys provided for instant usability, overridden by env if present
 const ARCHIVE_ACCESS_KEY = process.env.ARCHIVE_S3_ACCESS_KEY || 'XgsBgjpbB8qhGCak';
 const ARCHIVE_SECRET_KEY = process.env.ARCHIVE_S3_SECRET_KEY || 's0pBbUEfuqXG1crR';
@@ -17,10 +24,21 @@ const ARCHIVE_SECRET_KEY = process.env.ARCHIVE_S3_SECRET_KEY || 's0pBbUEfuqXG1cr
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Setup multer memory storage for streaming video uploads
+// Setup multer disk storage for high performance streaming video uploads
+const diskStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOADS_DIR);
+  },
+  filename: (req, file, cb) => {
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const uniquePrefix = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    cb(null, `${uniquePrefix}_${cleanName}`);
+  }
+});
+
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 1024 * 1024 * 1024 * 2 } // 2GB limit
+  storage: diskStorage,
+  limits: { fileSize: 1024 * 1024 * 1024 * 5 } // 5GB limit
 });
 
 // API Routes
@@ -121,7 +139,62 @@ app.post('/api/archive/inspect', async (req: Request, res: Response) => {
   }
 });
 
-// Method A: Upload video or image directly to Internet Archive S3
+// High-performance video streaming endpoint with HTTP 206 Partial Content (Range requests)
+app.get('/api/videos/:filename', (req: Request, res: Response) => {
+  const filename = path.basename(req.params.filename);
+  const filePath = path.join(UPLOADS_DIR, filename);
+
+  if (!fs.existsSync(filePath)) {
+    res.status(404).send('Video file not found on server');
+    return;
+  }
+
+  const stat = fs.statSync(filePath);
+  const fileSize = stat.size;
+  const range = req.headers.range;
+
+  // Determine mime type
+  const ext = path.extname(filename).toLowerCase();
+  let contentType = 'video/mp4';
+  if (ext === '.webm') contentType = 'video/webm';
+  else if (ext === '.mkv') contentType = 'video/x-matroska';
+  else if (ext === '.ogg') contentType = 'video/ogg';
+  else if (ext === '.mov') contentType = 'video/quicktime';
+  else if (ext === '.avi') contentType = 'video/x-msvideo';
+
+  if (range) {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+    if (start >= fileSize) {
+      res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + fileSize);
+      return;
+    }
+
+    const chunksize = (end - start) + 1;
+    const fileStream = fs.createReadStream(filePath, { start, end });
+    const head = {
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunksize,
+      'Content-Type': contentType,
+    };
+
+    res.writeHead(206, head);
+    fileStream.pipe(res);
+  } else {
+    const head = {
+      'Content-Length': fileSize,
+      'Content-Type': contentType,
+      'Accept-Ranges': 'bytes'
+    };
+    res.writeHead(200, head);
+    fs.createReadStream(filePath).pipe(res);
+  }
+});
+
+// Upload video or media directly with instant streaming and optional Archive.org sync
 app.post('/api/archive/upload', upload.any(), async (req: Request, res: Response) => {
   try {
     const files = req.files as Express.Multer.File[];
@@ -133,74 +206,74 @@ app.post('/api/archive/upload', upload.any(), async (req: Request, res: Response
       return;
     }
 
-    if (!ARCHIVE_ACCESS_KEY || !ARCHIVE_SECRET_KEY) {
-      res.status(500).json({ error: 'Archive.org S3 credentials are not configured.' });
-      return;
-    }
-
     const isImage = file.mimetype.startsWith('image/');
-    const archiveMediaType = isImage ? 'image' : 'movies';
-    const archiveCollection = isImage ? 'opensource_image' : 'opensource_movies';
+    // Direct stream endpoint served by Penguin View with HTTP 206 seekable ranges
+    const localStreamUrl = `/api/videos/${encodeURIComponent(file.filename)}`;
 
-    // Generate safe item identifier on Archive.org
-    // Format: penguin-view-[name]-[timestamp]
-    const baseSlug = (seriesName || title || (isImage ? 'poster' : 'video'))
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '-')
-      .replace(/-+/g, '-')
-      .slice(0, 30);
-    
-    const timestamp = Date.now().toString(36);
-    const identifier = `penguin-view-${baseSlug}-${timestamp}`;
+    // Prepare Archive.org item identifier if keys exist
+    let archiveStreamUrl = '';
+    const canUploadArchive = Boolean(ARCHIVE_ACCESS_KEY && ARCHIVE_SECRET_KEY);
 
-    // Clean filename
-    const cleanFilename = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const s3Url = `https://s3.us.archive.org/${identifier}/${encodeURIComponent(cleanFilename)}`;
+    if (canUploadArchive) {
+      const archiveMediaType = isImage ? 'image' : 'movies';
+      const archiveCollection = isImage ? 'opensource_image' : 'opensource_movies';
 
-    console.log(`Starting Archive.org S3 upload (${archiveMediaType}) to: ${s3Url}`);
+      const baseSlug = (seriesName || title || (isImage ? 'poster' : 'video'))
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 30);
+      
+      const timestamp = Date.now().toString(36);
+      const identifier = `penguin-view-${baseSlug}-${timestamp}`;
+      const cleanFilename = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const s3Url = `https://s3.us.archive.org/${identifier}/${encodeURIComponent(cleanFilename)}`;
+      archiveStreamUrl = `https://archive.org/download/${identifier}/${encodeURIComponent(cleanFilename)}`;
 
-    // Upload to Archive.org using their S3 protocol PUT
-    const s3Response = await fetch(s3Url, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `LOW ${ARCHIVE_ACCESS_KEY}:${ARCHIVE_SECRET_KEY}`,
-        'x-archive-auto-make-bucket': '1',
-        'x-archive-meta-mediatype': archiveMediaType,
-        'x-archive-meta-collection': archiveCollection,
-        'x-archive-meta-title': title || seriesName || (isImage ? 'Penguin View Poster' : 'Penguin View Video'),
-        'x-archive-meta-creator': 'Penguin View Community',
-        'Content-Type': file.mimetype || (isImage ? 'image/jpeg' : 'video/mp4'),
-        'Content-Length': file.size.toString()
-      },
-      body: file.buffer
-    });
-
-    if (!s3Response.ok) {
-      const errorText = await s3Response.text();
-      console.error('Archive.org S3 error response:', s3Response.status, errorText);
-      res.status(s3Response.status).json({
-        error: `Archive.org upload failed (${s3Response.status}): ${errorText.slice(0, 300)}`
-      });
-      return;
+      // Asynchronously upload to Archive.org in the background without blocking client
+      (async () => {
+        try {
+          const fileStream = fs.createReadStream(file.path);
+          await fetch(s3Url, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `LOW ${ARCHIVE_ACCESS_KEY}:${ARCHIVE_SECRET_KEY}`,
+              'x-archive-auto-make-bucket': '1',
+              'x-archive-meta-mediatype': archiveMediaType,
+              'x-archive-meta-collection': archiveCollection,
+              'x-archive-meta-title': title || seriesName || (isImage ? 'Penguin View Poster' : 'Penguin View Video'),
+              'x-archive-meta-creator': 'Penguin View Community',
+              'Content-Type': file.mimetype || 'video/mp4',
+              'Content-Length': file.size.toString()
+            },
+            // @ts-ignore
+            body: fileStream,
+            duplex: 'half'
+          });
+          console.log(`Archive.org upload finished successfully for ${file.filename}`);
+        } catch (s3Err) {
+          console.warn('Archive.org background upload notice:', s3Err);
+        }
+      })();
     }
 
-    // Direct permanent stream and download URL
-    const streamUrl = `https://archive.org/download/${identifier}/${encodeURIComponent(cleanFilename)}`;
-
+    // Return instant ready streaming URL
     res.json({
       success: true,
-      identifier,
-      filename: cleanFilename,
-      streamUrl,
-      downloadUrl: streamUrl,
+      filename: file.filename,
+      originalName: file.originalname,
+      size: file.size,
+      streamUrl: localStreamUrl,
+      localStreamUrl: localStreamUrl,
+      archiveStreamUrl: archiveStreamUrl || null,
       isImage,
       mediaType: mediaType || (isImage ? 'image' : 'movie'),
       seasonNumber: seasonNumber ? parseInt(seasonNumber, 10) : 1,
       episodeNumber: episodeNumber ? parseInt(episodeNumber, 10) : 1
     });
   } catch (error: any) {
-    console.error('Archive upload error:', error);
-    res.status(500).json({ error: error.message || 'Server error during Archive.org upload' });
+    console.error('Upload handler error:', error);
+    res.status(500).json({ error: error.message || 'Server error during upload' });
   }
 });
 

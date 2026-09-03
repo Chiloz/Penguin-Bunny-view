@@ -11,6 +11,8 @@ import { AnimatedBackground } from './components/AnimatedBackground';
 import { FloatingNotificationBanner } from './components/FloatingNotificationBanner';
 import { PullToRefresh } from './components/PullToRefresh';
 import { WelcomePopup } from './components/WelcomePopup';
+import { UploadProvider } from './context/UploadContext';
+import { UploadQueueBar } from './components/UploadQueueBar';
 import { Sparkles, Film } from 'lucide-react';
 
 export default function App() {
@@ -218,11 +220,15 @@ export default function App() {
   }
 
   return (
-    <PullToRefresh>
-      <div className={`min-h-screen bg-[#060911] relative overflow-x-hidden transition-colors duration-500 ${getThemeBackgroundClass()}`}>
-        
-        {/* Real-time In-App Push Notification Alert Banner */}
-        <FloatingNotificationBanner />
+    <UploadProvider>
+      <PullToRefresh>
+        <div className={`min-h-screen bg-[#060911] relative overflow-x-hidden transition-colors duration-500 ${getThemeBackgroundClass()}`}>
+          
+          {/* Real-time In-App Push Notification Alert Banner */}
+          <FloatingNotificationBanner />
+
+          {/* Persistent Floating Multi-Upload Background Queue Bar */}
+          <UploadQueueBar />
 
         {/* Welcome Pop-up with Fireworks and Dynamic Greeting */}
         <WelcomePopup 
@@ -319,5 +325,6 @@ export default function App() {
         </main>
       </div>
     </PullToRefresh>
+  </UploadProvider>
   );
 }

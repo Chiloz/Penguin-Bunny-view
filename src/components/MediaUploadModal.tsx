@@ -25,12 +25,52 @@ import {
   FileText,
   FolderTree,
   RefreshCw,
-  Info
+  Info,
+  HardDrive
 } from 'lucide-react';
 import { UserProfile, MediaItem, MediaSeason, MediaEpisode } from '../types';
 import { db } from '../firebase';
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { LiquidGlassCard } from './LiquidGlassCard';
+import { useUpload } from '../context/UploadContext';
+
+// Fast client-side image compressor for instant poster art uploads from device
+const compressImageFile = (file: File, maxWidth = 800, maxHeight = 1200, quality = 0.85): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } else {
+          resolve(reader.result as string);
+        }
+      };
+      img.onerror = () => resolve(reader.result as string);
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
+};
 
 export interface QueuedBatchEpisode {
   id: string;
@@ -130,6 +170,63 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+
+  // Global Multi-Upload Background Queue
+  const { startUpload, jobs, cancelUpload, setIsDrawerOpen } = useUpload();
+
+  // Find if there is an active background upload job matching this movie title or file name
+  const currentUploadJob = jobs.find(j => {
+    const candidateTitles = [
+      title.trim().toLowerCase(),
+      episodeTitle.trim().toLowerCase(),
+      selectedFile?.name?.replace(/\.[^/.]+$/, '').toLowerCase()
+    ].filter(Boolean);
+    return candidateTitles.includes(j.title.toLowerCase());
+  });
+
+  const handleStartAnotherMovie = () => {
+    setSelectedFile(null);
+    setTitle('');
+    setEpisodeTitle('');
+    setDescription('');
+    setMovieStreamUrl('');
+    setUploadProgressText('');
+  };
+
+  const handleStartBackgroundUpload = () => {
+    if (!selectedFile) {
+      setError('Please choose a video file (.mp4, .mkv, .webm) from your computer.');
+      return;
+    }
+
+    const effectiveTitle = title.trim() || episodeTitle.trim() || selectedFile.name.replace(/\.[^/.]+$/, '');
+    if (!title) setTitle(effectiveTitle);
+
+    const genresArray = genresInput
+      .split(',')
+      .map(g => g.trim())
+      .filter(Boolean);
+
+    const mediaPayload: Partial<MediaItem> = {
+      id: existingMediaItem?.id,
+      type: mediaType,
+      title: effectiveTitle,
+      description: description.trim(),
+      posterUrl: posterUrl.trim(),
+      backdropUrl: posterUrl.trim(),
+      trailerUrl: trailerUrl.trim(),
+      genres: genresArray,
+      releaseYear: releaseYear || 2024,
+      duration: movieDuration,
+      audioLang: mediaType === 'anime' ? audioLang : undefined,
+      uploadedByUid: currentUser.uid,
+      uploadedByName: currentUser.name
+    };
+
+    startUpload(selectedFile, mediaPayload);
+    setIsDrawerOpen(true);
+    setUploadProgressText(`🚀 Upload started in background with live % progress! You can close this window anytime.`);
+  };
 
   if (!isOpen) return null;
 
@@ -272,50 +369,35 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     }
   };
 
-  // Upload Poster Picture directly from Device
+  // Upload Poster Picture directly from Device (fast client-side compression)
   const handlePosterFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Fast local preview
-    const previewUrl = URL.createObjectURL(file);
-    setPosterUrl(previewUrl);
     setIsUploadingPoster(true);
-    setPosterUploadMsg('Uploading picture to Internet Archive...');
+    setPosterUploadMsg('Optimizing image from device...');
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('title', `${title || 'Media'} Poster`);
-      formData.append('seriesName', title);
-      formData.append('mediaType', 'image');
-
-      const res = await fetch('/api/archive/upload', {
-        method: 'POST',
-        body: formData
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to upload poster image to server');
+      const dataUrl = await compressImageFile(file);
+      if (dataUrl) {
+        setPosterUrl(dataUrl);
+        setPosterUploadMsg('✓ Poster picture loaded and ready!');
+      } else {
+        throw new Error('Could not process image');
       }
-
-      setPosterUrl(data.streamUrl);
-      setPosterUploadMsg('Poster uploaded to Internet Archive cloud!');
     } catch (err: any) {
-      console.warn('Poster upload warning:', err);
-      // Fallback to data URL so the uploaded picture works seamlessly offline
+      console.warn('Poster local read fallback:', err);
       const reader = new FileReader();
       reader.onload = () => {
         if (typeof reader.result === 'string') {
           setPosterUrl(reader.result);
+          setPosterUploadMsg('✓ Picture loaded from device!');
         }
       };
       reader.readAsDataURL(file);
-      setPosterUploadMsg('Picture saved from device!');
     } finally {
       setIsUploadingPoster(false);
-      setTimeout(() => setPosterUploadMsg(''), 3500);
+      setTimeout(() => setPosterUploadMsg(''), 4000);
     }
   };
 
@@ -607,9 +689,36 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       return;
     }
 
-    if (mediaType === 'movie' && !movieStreamUrl.trim()) {
-      setError('Please provide or upload a stream URL for this movie.');
-      return;
+    let finalMovieStreamUrl = movieStreamUrl.trim();
+
+    if (mediaType === 'movie') {
+      if (currentUploadJob) {
+        setSaveSuccess(true);
+        setUploadProgressText('Movie is uploading in the background! It will automatically appear on the catalog once completed.');
+        setTimeout(() => {
+          setSaveSuccess(false);
+          if (onSuccess) onSuccess();
+          onClose();
+        }, 1200);
+        return;
+      }
+
+      if (!finalMovieStreamUrl) {
+        if (selectedFile) {
+          handleStartBackgroundUpload();
+          setSaveSuccess(true);
+          setUploadProgressText('Movie upload started in the background queue! You can browse or upload another movie.');
+          setTimeout(() => {
+            setSaveSuccess(false);
+            if (onSuccess) onSuccess();
+            onClose();
+          }, 1200);
+          return;
+        } else {
+          setError('Please select a video file to upload, or provide a stream URL.');
+          return;
+        }
+      }
     }
 
     if (mediaType !== 'movie') {
@@ -644,7 +753,8 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       };
 
       if (mediaType === 'movie') {
-        mediaPayload.streamUrl = movieStreamUrl.trim();
+        mediaPayload.streamUrl = finalMovieStreamUrl;
+        mediaPayload.storageProvider = finalMovieStreamUrl.startsWith('local://') ? 'direct_url' : 'archive_org';
         mediaPayload.duration = movieDuration;
       } else {
         mediaPayload.seasons = seasons;
@@ -1020,23 +1130,47 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold text-sky-400 uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <Cloud className="w-3.5 h-3.5" />
-                    Select Upload or Import Method
+                    Select Video Source or Import Method
                   </span>
+                  {mediaType === 'movie' && movieStreamUrl && (
+                    <span className="text-[10px] font-mono text-emerald-300 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                      <Check className="w-3 h-3" />
+                      Stream Configured
+                    </span>
+                  )}
                 </div>
 
+                {/* Active movie stream banner */}
+                {mediaType === 'movie' && movieStreamUrl && (
+                  <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-2xl flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center shrink-0">
+                        {movieStreamUrl.startsWith('local://') ? (
+                          <HardDrive className="w-4 h-4 text-emerald-300" />
+                        ) : (
+                          <Film className="w-4 h-4 text-emerald-300" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white">
+                          {movieStreamUrl.startsWith('local://') ? 'Local Device Video Linked' : 'Cloud Stream Link Active'}
+                        </p>
+                        <p className="text-[11px] text-emerald-300/80 font-mono truncate">
+                          {movieStreamUrl.startsWith('local://') ? movieStreamUrl.replace('local://', '') : movieStreamUrl}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMovieStreamUrl('')}
+                      className="px-2 py-1 text-[10px] text-slate-400 hover:text-rose-300 rounded-lg bg-white/5 border border-white/10 hover:border-rose-400/30 transition-colors shrink-0 cursor-pointer"
+                    >
+                      Change
+                    </button>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-3 gap-2 bg-white/5 p-1 rounded-2xl border border-white/10">
-                  <button
-                    type="button"
-                    onClick={() => setUploadMode('archive_import')}
-                    className={`py-2 px-2 text-[11px] font-semibold rounded-xl flex items-center justify-center gap-1 transition-all cursor-pointer ${
-                      uploadMode === 'archive_import'
-                        ? 'bg-sky-500/30 text-sky-200 border border-sky-400/30 shadow'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <Link className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Archive.org Import</span>
-                  </button>
                   <button
                     type="button"
                     onClick={() => setUploadMode('direct_upload')}
@@ -1047,7 +1181,19 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                     }`}
                   >
                     <Upload className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Upload to IA S3</span>
+                    <span>Upload / Local File</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUploadMode('archive_import')}
+                    className={`py-2 px-2 text-[11px] font-semibold rounded-xl flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                      uploadMode === 'archive_import'
+                        ? 'bg-sky-500/30 text-sky-200 border border-sky-400/30 shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Link className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Archive.org Link</span>
                   </button>
                   <button
                     type="button"
@@ -1059,9 +1205,189 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                     }`}
                   >
                     <FileVideo className="w-3.5 h-3.5 text-purple-400" />
-                    <span>Direct Stream URL</span>
+                    <span>Direct Web URL</span>
                   </button>
                 </div>
+
+                {/* Method A: Device / Local Video File or S3 Upload */}
+                {uploadMode === 'direct_upload' && (
+                  <div className="p-4 bg-indigo-950/20 border border-indigo-500/20 rounded-2xl space-y-3">
+                    <p className="text-xs text-slate-300">
+                      Choose a movie video file from your computer (.mp4, .mkv, .webm). You can upload it with real-time percentage tracking, or link it instantly as a local movie.
+                    </p>
+
+                    {/* If this movie is actively uploading in the background queue */}
+                    {currentUploadJob ? (
+                      <div className="p-4 bg-[#0c1322]/90 border border-sky-400/30 rounded-2xl space-y-3 shadow-xl backdrop-blur-md">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-ping" />
+                            <h4 className="text-xs font-bold text-white">
+                              {currentUploadJob.status === 'completed'
+                                ? '✓ Upload Complete & Ready to Stream'
+                                : currentUploadJob.status === 'publishing'
+                                ? 'Finalizing & Publishing to Catalog...'
+                                : 'Uploading Movie in Background'}
+                            </h4>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono font-bold text-sky-300 bg-sky-500/20 px-2.5 py-0.5 rounded-full border border-sky-400/30">
+                              {currentUploadJob.progress}%
+                            </span>
+                            {currentUploadJob.status === 'uploading' && (
+                              <button
+                                type="button"
+                                onClick={() => cancelUpload(currentUploadJob.id)}
+                                className="text-[10px] text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 px-2 py-0.5 rounded-lg border border-rose-500/20 cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Large Percentage & Progress Bar */}
+                        <div className="space-y-1.5">
+                          <div className="w-full h-3.5 bg-black/40 rounded-full overflow-hidden p-0.5 border border-white/10 relative">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ${
+                                currentUploadJob.status === 'completed'
+                                  ? 'bg-gradient-to-r from-emerald-400 to-teal-500'
+                                  : currentUploadJob.status === 'error'
+                                  ? 'bg-rose-500'
+                                  : 'bg-gradient-to-r from-sky-400 via-indigo-500 to-cyan-400 animate-pulse'
+                              }`}
+                              style={{ width: `${currentUploadJob.progress}%` }}
+                            />
+                          </div>
+
+                          {/* Stats Grid */}
+                          <div className="flex items-center justify-between text-[11px] font-mono text-slate-300">
+                            <span>
+                              {(currentUploadJob.loadedBytes / (1024 * 1024)).toFixed(1)} MB / {(currentUploadJob.fileSize / (1024 * 1024)).toFixed(1)} MB
+                            </span>
+                            {currentUploadJob.status === 'uploading' && (
+                              <span className="text-sky-300">
+                                {currentUploadJob.speedMBs > 0 ? `${currentUploadJob.speedMBs} MB/s` : 'Starting...'}
+                                {currentUploadJob.timeRemainingSec ? ` • ~${currentUploadJob.timeRemainingSec}s left` : ''}
+                              </span>
+                            )}
+                            {currentUploadJob.status === 'completed' && (
+                              <span className="text-emerald-400 font-sans font-medium">
+                                Published to Catalog!
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Background Helper Explainer */}
+                        <div className="p-3 bg-sky-500/10 border border-sky-400/20 rounded-xl text-xs text-sky-200 space-y-1">
+                          <p className="font-semibold flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-sky-400" />
+                            Multi-Tasking Background Active:
+                          </p>
+                          <p className="text-[11px] text-slate-300 leading-relaxed">
+                            You don't need to wait on this screen! You can safely click <strong>Back / Close</strong> to browse or start a watch party. The upload will continue running in the background. You can also start uploading another movie right away!
+                          </p>
+                        </div>
+
+                        {/* Multi-upload buttons */}
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={handleStartAnotherMovie}
+                            className="flex-1 py-2 px-3 bg-gradient-to-r from-sky-500/30 to-indigo-500/30 hover:from-sky-500/40 hover:to-indigo-500/40 border border-sky-400/40 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                          >
+                            <Plus className="w-3.5 h-3.5 text-sky-300" />
+                            <span>Upload Another Movie</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={onClose}
+                            className="py-2 px-3 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white font-medium text-xs rounded-xl flex items-center justify-center gap-1 cursor-pointer transition-all"
+                          >
+                            <span>Minimize Window</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* If not currently uploading, show file selection and upload buttons */
+                      <div className="space-y-2.5">
+                        <input
+                          type="text"
+                          placeholder="Video Title (e.g. Full Movie)"
+                          className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
+                          value={episodeTitle}
+                          onChange={(e) => setEpisodeTitle(e.target.value)}
+                        />
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                          <label className="flex-1 px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/15 rounded-xl text-xs text-slate-200 cursor-pointer flex items-center gap-2 truncate">
+                            <Upload className="w-4 h-4 text-sky-400 shrink-0" />
+                            <span className="truncate">
+                              {selectedFile ? `${selectedFile.name} (${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB)` : 'Choose Movie Video (.mp4, .mkv, .webm)'}
+                            </span>
+                            <input
+                              type="file"
+                              accept="video/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                if (e.target.files?.[0]) {
+                                  const f = e.target.files[0];
+                                  setSelectedFile(f);
+                                  if (!episodeTitle) setEpisodeTitle(f.name.replace(/\.[^/.]+$/, ''));
+                                  if (!title) setTitle(f.name.replace(/\.[^/.]+$/, ''));
+                                }
+                              }}
+                            />
+                          </label>
+
+                          {selectedFile && mediaType === 'movie' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMovieStreamUrl(`local://${selectedFile.name}`);
+                                setUploadProgressText('✓ Linked as Local Movie! Click "Publish to Catalog" below to save.');
+                              }}
+                              className="px-4 py-2.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-400/30 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                              title="Instant playback without uploading gigabytes of data"
+                            >
+                              <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Instant Local Link</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={handleStartBackgroundUpload}
+                            disabled={!selectedFile}
+                            className="px-4 py-2.5 bg-gradient-to-r from-sky-400 to-indigo-600 hover:from-sky-300 hover:to-indigo-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition-all active:scale-95 shadow-lg shadow-sky-500/20"
+                          >
+                            <Cloud className="w-3.5 h-3.5 text-sky-200" />
+                            <span>Upload Movie (Live %)</span>
+                          </button>
+                        </div>
+
+                        {selectedFile && (
+                          <div className="p-2.5 bg-sky-500/10 border border-sky-400/20 rounded-xl text-[11px] text-sky-200 flex items-start gap-2">
+                            <Info className="w-4 h-4 shrink-0 text-sky-400 mt-0.5" />
+                            <span>
+                              Click <strong>"Upload Movie (Live %)"</strong> to start uploading with real-time percentage progress. You can freely close this window or click Back; your movie will continue uploading in the background and will automatically publish so your friends can stream it!
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {uploadProgressText && (
+                      <p className="text-[11px] font-mono text-sky-300 animate-pulse bg-sky-500/10 p-2 rounded-lg border border-sky-400/20">
+                        {uploadProgressText}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* Method B: Archive.org Link Import */}
                 {uploadMode === 'archive_import' && (
@@ -1098,59 +1424,6 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                         <span>Found {archiveInspectResult.filesCount} video episodes! Automatically filled into {mediaType === 'movie' ? 'movie stream' : 'Season 1'}.</span>
                         <CheckCircle2 className="w-4 h-4" />
                       </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Method A: Direct Upload to Archive.org */}
-                {uploadMode === 'direct_upload' && (
-                  <div className="p-4 bg-indigo-950/20 border border-indigo-500/20 rounded-2xl space-y-3">
-                    <p className="text-xs text-slate-300">
-                      Upload your MP4 video file directly through Penguin View. It streams directly to your Internet Archive S3 account with unlimited free storage!
-                    </p>
-
-                    <div className="space-y-2">
-                      <input
-                        type="text"
-                        placeholder="Episode / Video Title (e.g. Ep 1: The Beginning)"
-                        className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
-                        value={episodeTitle}
-                        onChange={(e) => setEpisodeTitle(e.target.value)}
-                      />
-
-                      <div className="flex items-center gap-2">
-                        <label className="flex-1 px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/15 rounded-xl text-xs text-slate-200 cursor-pointer flex items-center gap-2 truncate">
-                          <Upload className="w-4 h-4 text-sky-400 shrink-0" />
-                          <span className="truncate">{selectedFile ? selectedFile.name : 'Choose Video (.mp4, .mkv, .webm)'}</span>
-                          <input
-                            type="file"
-                            accept="video/*"
-                            className="hidden"
-                            onChange={(e) => {
-                              if (e.target.files?.[0]) {
-                                setSelectedFile(e.target.files[0]);
-                                if (!episodeTitle) setEpisodeTitle(e.target.files[0].name.replace(/\.[^/.]+$/, ''));
-                              }
-                            }}
-                          />
-                        </label>
-
-                        <button
-                          type="button"
-                          onClick={handleUploadFileToArchive}
-                          disabled={!selectedFile || isUploadingFile}
-                          className="px-5 py-2.5 bg-gradient-to-r from-sky-400 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                        >
-                          {isUploadingFile ? <span className="animate-spin">⏳</span> : <Cloud className="w-4 h-4" />}
-                          <span>Upload Now</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {uploadProgressText && (
-                      <p className="text-[11px] font-mono text-sky-300 animate-pulse bg-sky-500/10 p-2 rounded-lg border border-sky-400/20">
-                        {uploadProgressText}
-                      </p>
                     )}
                   </div>
                 )}
@@ -1472,26 +1745,49 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
               )}
 
               {/* Bottom Actions */}
-              <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2 sticky -bottom-5 bg-[#0e1424]/95 backdrop-blur-md pb-1 z-20">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-4 py-2 text-xs text-slate-400 hover:text-white rounded-xl bg-white/5 hover:bg-white/10 transition-all cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className="px-6 py-2 text-xs font-bold text-white rounded-xl bg-gradient-to-r from-sky-400 to-indigo-600 hover:from-sky-300 hover:to-indigo-500 transition-all shadow-lg flex items-center gap-2 cursor-pointer disabled:opacity-50 active:scale-95"
-                >
-                  {isSaving ? (
-                    <span className="animate-spin text-sm">⏳</span>
-                  ) : (
-                    <CheckCircle2 className="w-4 h-4" />
+              <div className="pt-3 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sticky -bottom-5 bg-[#0e1424]/95 backdrop-blur-md pb-1 z-20">
+                <div className="text-left">
+                  {mediaType === 'movie' && (
+                    movieStreamUrl ? (
+                      <span className="text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Ready: {movieStreamUrl.startsWith('local://') ? `Local Movie (${movieStreamUrl.replace('local://', '')})` : 'Cloud Stream Link'}</span>
+                      </span>
+                    ) : selectedFile ? (
+                      <span className="text-[11px] text-sky-300 bg-sky-500/10 border border-sky-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
+                        <HardDrive className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Will link selected video: {selectedFile.name}</span>
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Please choose a video file or stream URL</span>
+                      </span>
+                    )
                   )}
-                  <span>Publish to Catalog</span>
-                </button>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="px-4 py-2 text-xs text-slate-400 hover:text-white rounded-xl bg-white/5 hover:bg-white/10 transition-all cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSaving}
+                    className="px-6 py-2 text-xs font-bold text-white rounded-xl bg-gradient-to-r from-sky-400 to-indigo-600 hover:from-sky-300 hover:to-indigo-500 transition-all shadow-lg flex items-center gap-2 cursor-pointer disabled:opacity-50 active:scale-95"
+                  >
+                    {isSaving ? (
+                      <span className="animate-spin text-sm">⏳</span>
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4" />
+                    )}
+                    <span>Publish to Catalog</span>
+                  </button>
+                </div>
               </div>
 
             </form>

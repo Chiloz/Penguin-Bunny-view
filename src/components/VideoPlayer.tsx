@@ -311,13 +311,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       // Auto-load cloud stream URL if present and user has not switched to local file mode
       if (roomData.streamUrl && !videoFile && !userOptedLocalRef.current) {
-        setVideoUrl(prev => {
-          if (!prev || (prev !== roomData.streamUrl && !prev.startsWith('blob:'))) {
-            return roomData.streamUrl!;
-          }
-          return prev;
-        });
-        setHybridMode('cloud');
+        if (!roomData.streamUrl.startsWith('local://')) {
+          setVideoUrl(prev => {
+            if (!prev || (prev !== roomData.streamUrl && !prev.startsWith('blob:'))) {
+              return roomData.streamUrl!;
+            }
+            return prev;
+          });
+          setHybridMode('cloud');
+        } else {
+          setHybridMode('local');
+        }
       }
 
       // Episode switch synchronization
@@ -783,7 +787,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       <div className="max-w-xl mx-auto px-4 py-12 text-center font-sans">
         <LiquidGlassCard intensity="glass" className="space-y-6 py-10">
           
-          {room?.streamUrl && (
+          {room?.streamUrl && !room.streamUrl.startsWith('local://') ? (
             <div className="p-4 bg-sky-500/10 border border-sky-400/30 rounded-2xl text-left space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-sky-300 flex items-center gap-1.5">
@@ -812,7 +816,25 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 Stream Cloud Video Now
               </button>
             </div>
-          )}
+          ) : room?.streamUrl && room.streamUrl.startsWith('local://') ? (
+            <div className="p-4 bg-emerald-500/10 border border-emerald-400/30 rounded-2xl text-left space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-emerald-300 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  Local Device Movie (Data Saver Mode)
+                </span>
+                <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  0 MB Used
+                </span>
+              </div>
+              <p className="text-white text-sm font-bold line-clamp-1">
+                {room.streamUrl.replace('local://', '')}
+              </p>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                This movie is configured for local device playback. Select your local file below from this device to start synchronized playback!
+              </p>
+            </div>
+          ) : null}
 
           <div 
             onDragOver={handleDragOver}
