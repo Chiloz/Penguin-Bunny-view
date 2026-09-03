@@ -10,7 +10,8 @@ import {
   ChevronDown, 
   Film, 
   Trash2,
-  Play
+  Play,
+  RotateCcw
 } from 'lucide-react';
 
 export const UploadQueueBar: React.FC = () => {
@@ -20,7 +21,8 @@ export const UploadQueueBar: React.FC = () => {
     isDrawerOpen, 
     setIsDrawerOpen, 
     cancelUpload, 
-    clearCompleted 
+    clearCompleted,
+    retryUpload
   } = useUpload();
 
   if (jobs.length === 0) {
@@ -167,10 +169,31 @@ export const UploadQueueBar: React.FC = () => {
                         </span>
                       )}
                       {job.status === 'error' && (
-                        <span className="text-[10px] font-semibold text-rose-300 bg-rose-500/20 border border-rose-400/30 px-2 py-0.5 rounded-full flex items-center gap-1">
-                          <AlertCircle className="w-3 h-3 text-rose-400" />
-                          <span>Failed</span>
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] font-semibold text-rose-300 bg-rose-500/20 border border-rose-400/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3 text-rose-400" />
+                            <span>Failed</span>
+                          </span>
+                          {job.file && (
+                            <button
+                              type="button"
+                              onClick={() => retryUpload(job.id)}
+                              className="px-2 py-0.5 text-[10px] font-semibold text-sky-300 hover:text-white bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 rounded-full flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Retry Upload"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                              <span>Retry</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => cancelUpload(job.id)}
+                            className="w-5 h-5 rounded-md hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+                            title="Dismiss"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
                       )}
 
                       {job.status === 'uploading' && (

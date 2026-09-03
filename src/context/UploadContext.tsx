@@ -18,6 +18,7 @@ export interface UploadJob {
   error?: string;
   streamUrl?: string;
   mediaItemPayload: Partial<MediaItem>;
+  file?: File;
   createdAt: number;
 }
 
@@ -27,6 +28,7 @@ interface UploadContextType {
   isDrawerOpen: boolean;
   setIsDrawerOpen: (open: boolean) => void;
   startUpload: (file: File, mediaPayload: Partial<MediaItem>) => string;
+  retryUpload: (jobId: string) => void;
   cancelUpload: (jobId: string) => void;
   clearCompleted: () => void;
   getJobForTitle: (title: string) => UploadJob | undefined;
@@ -59,8 +61,8 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return jobs.find(j => j.title.toLowerCase() === title.trim().toLowerCase());
   }, [jobs]);
 
-  const startUpload = useCallback((file: File, mediaPayload: Partial<MediaItem>): string => {
-    const jobId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const runUpload = useCallback((file: File, mediaPayload: Partial<MediaItem>, existingJobId?: string) => {
+    const jobId = existingJobId || `upload_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const jobTitle = mediaPayload.title || file.name.replace(/\.[^/.]+$/, '');
 
     const initialJob: UploadJob = {
@@ -72,14 +74,23 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       progress: 0,
       speedMBs: 0,
       status: 'uploading',
+      error: undefined,
       mediaItemPayload: {
         ...mediaPayload,
         title: jobTitle
       },
+      file,
       createdAt: Date.now()
     };
 
-    setJobs(prev => [initialJob, ...prev]);
+    setJobs(prev => {
+      const exists = prev.some(j => j.id === jobId);
+      if (exists) {
+        return prev.map(j => (j.id === jobId ? initialJob : j));
+      }
+      return [initialJob, ...prev];
+    });
+
     // Automatically open the drawer so user sees active progress
     setIsDrawerOpen(true);
 
@@ -186,7 +197,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               ? {
                   ...j,
                   status: 'error',
-                  error: err.message || 'Upload failed. Please try again.'
+                  error: err.message || 'Upload interrupted. Please try again.'
                 }
               : j
           )
@@ -197,6 +208,16 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return jobId;
   }, []);
 
+  const startUpload = useCallback((file: File, mediaPayload: Partial<MediaItem>): string => {
+    return runUpload(file, mediaPayload);
+  }, [runUpload]);
+
+  const retryUpload = useCallback((jobId: string) => {
+    const job = jobs.find(j => j.id === jobId);
+    if (!job || !job.file) return;
+    runUpload(job.file, job.mediaItemPayload, jobId);
+  }, [jobs, runUpload]);
+
   return (
     <UploadContext.Provider
       value={{
@@ -205,6 +226,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         isDrawerOpen,
         setIsDrawerOpen,
         startUpload,
+        retryUpload,
         cancelUpload,
         clearCompleted,
         getJobForTitle

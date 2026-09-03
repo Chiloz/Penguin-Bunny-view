@@ -26,7 +26,7 @@ export interface ChunkUploadResult {
   episodeNumber: number;
 }
 
-const CHUNK_SIZE = 8 * 1024 * 1024; // 8MB per chunk (comfortably below the 32MB proxy limit)
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk (fast transmission, well within proxy limits)
 
 export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<ChunkUploadResult> {
   const {
@@ -54,7 +54,7 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
     if (signal?.aborted) {
       // Notify server to clean up partial chunks
       try {
-        fetch(`/api/archive/upload-chunk/${uploadId}`, { method: 'DELETE' }).catch(() => {});
+        fetch(`/api/archive/upload-chunk/${uploadId}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
       } catch {}
       throw new Error('Upload cancelled');
     }
@@ -64,9 +64,10 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
     const chunkBlob = file.slice(start, end);
 
     let attempt = 0;
-    const maxRetries = 2;
+    const maxRetries = 3;
     let chunkSuccess = false;
     let finalChunkResponse: ChunkUploadResult | null = null;
+    let lastChunkError: Error | null = null;
 
     while (attempt <= maxRetries && !chunkSuccess) {
       attempt++;
@@ -92,11 +93,14 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
           if (description) formData.append('description', description);
 
           const xhr = new XMLHttpRequest();
+          // Critical for Cloud Run / iframe authentication cookies
+          xhr.withCredentials = true;
+
           if (onXhrCreated) onXhrCreated(xhr);
 
           if (signal) {
             signal.addEventListener('abort', () => {
-              xhr.abort();
+              try { xhr.abort(); } catch {}
               reject(new Error('Upload cancelled'));
             });
           }
@@ -111,7 +115,7 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
             let speedMBs = 0;
             let etaSec = 0;
 
-            if (deltaTime >= 0.4 && deltaBytes > 0) {
+            if (deltaTime >= 0.3 && deltaBytes > 0) {
               speedMBs = parseFloat(((deltaBytes / (1024 * 1024)) / deltaTime).toFixed(1));
               const remainingBytes = totalSize - currentTotalLoaded;
               if (speedMBs > 0) {
@@ -128,13 +132,14 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
 
           xhr.onload = () => {
             const rawText = xhr.responseText || '';
+            const isHtml = rawText.trim().startsWith('<') || rawText.includes('<!DOCTYPE') || rawText.includes('<html>');
 
-            // Guard against proxy HTML error pages (e.g. 413 or 504)
-            if (rawText.trim().startsWith('<') || rawText.includes('<!DOCTYPE') || rawText.includes('<html>')) {
+            // If an auth redirect occurred or proxy HTML was returned, trigger a retry
+            if (isHtml) {
               reject(new Error(
                 xhr.status === 413
-                  ? 'File chunk exceeded server limits.'
-                  : `Server communication interrupted (HTTP ${xhr.status}).`
+                  ? 'Chunk size exceeded proxy limits.'
+                  : `Server connection refreshed (${xhr.status}). Retrying chunk...`
               ));
               return;
             }
@@ -158,7 +163,7 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
           };
 
           xhr.onerror = () => {
-            reject(new Error('Network error during file upload.'));
+            reject(new Error('Network error during file upload. Retrying...'));
           };
 
           xhr.onabort = () => {
@@ -166,6 +171,7 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
           };
 
           xhr.open('POST', '/api/archive/upload-chunk', true);
+          xhr.setRequestHeader('Accept', 'application/json');
           xhr.send(formData);
         });
 
@@ -174,15 +180,20 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
           finalChunkResponse = resData;
         }
       } catch (err: any) {
+        lastChunkError = err;
         if (signal?.aborted || err.message === 'Upload cancelled') {
           throw err;
         }
         if (attempt > maxRetries) {
-          throw err;
+          throw lastChunkError || new Error(`Upload failed at chunk ${chunkIndex + 1} of ${totalChunks}`);
         }
-        // Brief pause before retry
-        await new Promise(r => setTimeout(r, 800));
+        // Exponential backoff before retry (500ms, 1000ms, 1500ms)
+        await new Promise(r => setTimeout(r, 500 * attempt));
       }
+    }
+
+    if (!chunkSuccess) {
+      throw lastChunkError || new Error(`Failed to upload chunk ${chunkIndex + 1} after ${maxRetries} attempts.`);
     }
 
     completedBytes += (end - start);
