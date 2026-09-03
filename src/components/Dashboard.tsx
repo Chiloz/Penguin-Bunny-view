@@ -25,7 +25,8 @@ import {
   Check, 
   Copy, 
   Plus, 
-  Sparkles, 
+  Sun,
+  Crown,
   LogOut, 
   Tv, 
   UserCheck,
@@ -83,14 +84,14 @@ const THEME_PRESETS = [
 const ANIMATED_THEMES = [
   { id: 'autumn', label: 'Autumn Tree 🍁', icon: Leaf, color: 'from-amber-500 to-orange-600' },
   { id: 'liquid', label: 'Liquid Smooth', icon: Droplets, color: 'from-cyan-500 to-blue-600' },
-  { id: 'bubbles', label: 'Bouncing Bubbles', icon: Sparkles, color: 'from-sky-400 to-indigo-500' },
+  { id: 'bubbles', label: 'Bouncing Bubbles', icon: Droplets, color: 'from-sky-400 to-indigo-500' },
   { id: 'fire', label: 'Burning Fire', icon: Flame, color: 'from-amber-500 to-rose-600' },
   { id: 'cyber', label: 'Cyber Matrix', icon: Zap, color: 'from-emerald-400 to-teal-600' },
   { id: 'emerald', label: 'Lush Emerald', icon: Heart, color: 'from-teal-400 to-emerald-500' },
-  { id: 'green', label: 'Meadow Green', icon: Sparkles, color: 'from-green-400 to-emerald-600' },
-  { id: 'yellow', label: 'Solar Yellow', icon: Sparkles, color: 'from-yellow-300 to-amber-500' },
+  { id: 'green', label: 'Meadow Green', icon: Leaf, color: 'from-green-400 to-emerald-600' },
+  { id: 'yellow', label: 'Solar Yellow', icon: Sun, color: 'from-yellow-300 to-amber-500' },
   { id: 'orange', label: 'Sunset Orange', icon: Flame, color: 'from-orange-400 to-amber-600' },
-  { id: 'gold', label: 'Royal Gold', icon: Sparkles, color: 'from-yellow-400 to-amber-600' },
+  { id: 'gold', label: 'Royal Gold', icon: Crown, color: 'from-yellow-400 to-amber-600' },
   { id: 'silver', label: 'Platinum Silver', icon: Eye, color: 'from-slate-300 to-slate-500' },
   { id: 'sky', label: 'Midnight Sky', icon: Eye, color: 'from-slate-600 to-indigo-900' }
 ];

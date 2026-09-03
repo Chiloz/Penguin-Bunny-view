@@ -4,7 +4,7 @@ import {
   Upload, 
   Film, 
   Tv, 
-  Sparkles, 
+  Search, 
   Link, 
   FolderPlus, 
   Plus, 
@@ -33,6 +33,7 @@ import { db } from '../firebase';
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { LiquidGlassCard } from './LiquidGlassCard';
 import { useUpload } from '../context/UploadContext';
+import { uploadFileInChunks } from '../utils/chunkedUpload';
 
 // Fast client-side image compressor for instant poster art uploads from device
 const compressImageFile = (file: File, maxWidth = 800, maxHeight = 1200, quality = 0.85): Promise<string> => {
@@ -225,7 +226,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
     startUpload(selectedFile, mediaPayload);
     setIsDrawerOpen(true);
-    setUploadProgressText(`🚀 Upload started in background with live % progress! You can close this window anytime.`);
+    setUploadProgressText('Upload started in background.');
   };
 
   if (!isOpen) return null;
@@ -311,25 +312,22 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     setUploadProgressText('Connecting to Internet Archive S3...');
 
     try {
-      const formData = new FormData();
-      formData.append('videoFile', selectedFile);
-      formData.append('title', episodeTitle.trim() || selectedFile.name);
-      formData.append('seriesName', title.trim());
-      formData.append('seasonNumber', (activeSeasonIndex + 1).toString());
-      formData.append('episodeNumber', ((seasons[activeSeasonIndex]?.episodes?.length || 0) + 1).toString());
-      formData.append('mediaType', mediaType);
+      setUploadProgressText('Uploading file...');
 
-      setUploadProgressText('Streaming file to Internet Archive unlimited storage...');
-
-      const res = await fetch('/api/archive/upload', {
-        method: 'POST',
-        body: formData
+      const data = await uploadFileInChunks({
+        file: selectedFile,
+        title: episodeTitle.trim() || selectedFile.name,
+        seriesName: title.trim(),
+        seasonNumber: activeSeasonIndex + 1,
+        episodeNumber: (seasons[activeSeasonIndex]?.episodes?.length || 0) + 1,
+        mediaType,
+        onProgress: (loaded, total) => {
+          const pct = Math.min(99, Math.round((loaded / total) * 100));
+          const loadedMb = (loaded / (1024 * 1024)).toFixed(1);
+          const totalMb = (total / (1024 * 1024)).toFixed(1);
+          setUploadProgressText(`Uploading: ${pct}% (${loadedMb} MB / ${totalMb} MB)`);
+        }
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Upload to Archive.org failed');
-      }
 
       setUploadProgressText('Upload complete! Streaming link generated.');
 
@@ -407,24 +405,19 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     if (!file) return;
 
     setIsUploadingTrailer(true);
-    setTrailerUploadMsg('Uploading trailer video to Internet Archive S3...');
+    setTrailerUploadMsg('Uploading trailer video...');
 
     try {
-      const formData = new FormData();
-      formData.append('videoFile', file);
-      formData.append('title', `${title || 'Media'} Official Trailer`);
-      formData.append('seriesName', title);
-      formData.append('mediaType', 'movie');
-
-      const res = await fetch('/api/archive/upload', {
-        method: 'POST',
-        body: formData
+      const data = await uploadFileInChunks({
+        file,
+        title: `${title || 'Media'} Official Trailer`,
+        seriesName: title,
+        mediaType: 'movie',
+        onProgress: (loaded, total) => {
+          const pct = Math.min(99, Math.round((loaded / total) * 100));
+          setTrailerUploadMsg(`Uploading trailer: ${pct}%`);
+        }
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to upload trailer');
-      }
 
       setTrailerUrl(data.streamUrl);
       setTrailerUploadMsg('Trailer video uploaded successfully!');
@@ -542,23 +535,18 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       setUploadProgressText(`[${i + 1}/${batchQueue.length}] Uploading "${item.title}" (${item.sizeMb})...`);
 
       try {
-        const formData = new FormData();
-        formData.append('videoFile', item.file);
-        formData.append('title', item.title);
-        formData.append('seriesName', title.trim() || 'Series');
-        formData.append('seasonNumber', item.seasonNumber.toString());
-        formData.append('episodeNumber', item.episodeNumber.toString());
-        formData.append('mediaType', mediaType);
-
-        const res = await fetch('/api/archive/upload', {
-          method: 'POST',
-          body: formData
+        const data = await uploadFileInChunks({
+          file: item.file,
+          title: item.title,
+          seriesName: title.trim() || 'Series',
+          seasonNumber: item.seasonNumber,
+          episodeNumber: item.episodeNumber,
+          mediaType,
+          onProgress: (loaded, total) => {
+            const pct = Math.min(99, Math.round((loaded / total) * 100));
+            setUploadProgressText(`[${i + 1}/${batchQueue.length}] Uploading "${item.title}": ${pct}%`);
+          }
         });
-
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || `Upload failed for ${item.file.name}`);
-        }
 
         setBatchQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'completed', streamUrl: data.streamUrl } : q));
 
@@ -694,12 +682,12 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     if (mediaType === 'movie') {
       if (currentUploadJob) {
         setSaveSuccess(true);
-        setUploadProgressText('Movie is uploading in the background! It will automatically appear on the catalog once completed.');
+        setUploadProgressText('Uploading in background. It will show in the catalog once done.');
         setTimeout(() => {
           setSaveSuccess(false);
           if (onSuccess) onSuccess();
           onClose();
-        }, 1200);
+        }, 1000);
         return;
       }
 
@@ -707,12 +695,12 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
         if (selectedFile) {
           handleStartBackgroundUpload();
           setSaveSuccess(true);
-          setUploadProgressText('Movie upload started in the background queue! You can browse or upload another movie.');
+          setUploadProgressText('Upload started in background.');
           setTimeout(() => {
             setSaveSuccess(false);
             if (onSuccess) onSuccess();
             onClose();
-          }, 1200);
+          }, 1000);
           return;
         } else {
           setError('Please select a video file to upload, or provide a stream URL.');
@@ -1282,13 +1270,10 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                         </div>
 
                         {/* Background Helper Explainer */}
-                        <div className="p-3 bg-sky-500/10 border border-sky-400/20 rounded-xl text-xs text-sky-200 space-y-1">
+                        <div className="px-3 py-2 bg-sky-500/10 border border-sky-400/20 rounded-xl text-xs text-sky-200">
                           <p className="font-semibold flex items-center gap-1.5">
-                            <Sparkles className="w-3.5 h-3.5 text-sky-400" />
-                            Multi-Tasking Background Active:
-                          </p>
-                          <p className="text-[11px] text-slate-300 leading-relaxed">
-                            You don't need to wait on this screen! You can safely click <strong>Back / Close</strong> to browse or start a watch party. The upload will continue running in the background. You can also start uploading another movie right away!
+                            <span>🏋🏾‍♂️</span>
+                            <span>Multi-Tasking Background Active</span>
                           </p>
                         </div>
 
@@ -1374,7 +1359,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                           <div className="p-2.5 bg-sky-500/10 border border-sky-400/20 rounded-xl text-[11px] text-sky-200 flex items-start gap-2">
                             <Info className="w-4 h-4 shrink-0 text-sky-400 mt-0.5" />
                             <span>
-                              Click <strong>"Upload Movie (Live %)"</strong> to start uploading with real-time percentage progress. You can freely close this window or click Back; your movie will continue uploading in the background and will automatically publish so your friends can stream it!
+                              Uploads continue in the background if you close this or navigate away.
                             </span>
                           </div>
                         )}
@@ -1413,7 +1398,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                         {isInspectingArchive ? (
                           <span className="animate-spin">⏳</span>
                         ) : (
-                          <Sparkles className="w-3.5 h-3.5" />
+                          <Search className="w-3.5 h-3.5" />
                         )}
                         <span>Inspect & Auto-Fill</span>
                       </button>

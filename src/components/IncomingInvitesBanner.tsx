@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { UserProfile, RoomInvite } from '../types';
 import { db } from '../firebase';
 import { collection, query, where, onSnapshot, doc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { Tv, Play, X, Sparkles, Check, Bell } from 'lucide-react';
+import { Tv, Play, X, Check, Bell } from 'lucide-react';
 import { LiquidGlassCard } from './LiquidGlassCard';
 
 interface IncomingInvitesBannerProps {

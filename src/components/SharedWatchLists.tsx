@@ -23,7 +23,6 @@ import {
   Image as ImageIcon, 
   Star, 
   MessageSquare,
-  Sparkles,
   ChevronRight,
   RotateCcw,
   UserCheck,
@@ -453,7 +452,7 @@ export const SharedWatchLists: React.FC<SharedWatchListsProps> = ({
           {showAddItemForm && (
             <form onSubmit={handleAddItemToSharedList做到} className="space-y-4 bg-white/5 border border-white/10 p-4 rounded-2xl mb-6 animate-fade-in">
               <h5 className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-sky-400" />
+                <Plus className="w-4 h-4 text-sky-400" />
                 Add Title to "{activeList.title}"
               </h5>
 

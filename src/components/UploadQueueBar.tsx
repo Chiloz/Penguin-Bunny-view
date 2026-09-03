@@ -9,7 +9,6 @@ import {
   ChevronUp, 
   ChevronDown, 
   Film, 
-  Sparkles,
   Trash2,
   Play
 } from 'lucide-react';
@@ -231,13 +230,6 @@ export const UploadQueueBar: React.FC = () => {
                 </div>
               );
             })}
-          </div>
-
-          {/* Footer note */}
-          <div className="p-2.5 bg-white/[0.02] border-t border-white/10 text-center">
-            <p className="text-[10px] text-slate-400 leading-tight">
-              💡 <strong>Background Mode Active:</strong> You can close modals, navigate around, or upload another movie anytime. Uploads continue uninterrupted!
-            </p>
           </div>
         </div>
       )}

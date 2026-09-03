@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { 
   X, 
   Send, 
-  Sparkles, 
   Film, 
   Tv, 
   Upload, 
@@ -222,7 +221,7 @@ export const MediaRequestModal: React.FC<MediaRequestModalProps> = ({
                 <>
                   <div className="p-3 bg-indigo-500/10 border border-indigo-400/20 rounded-2xl space-y-1 text-slate-300 text-xs">
                     <p className="font-semibold text-indigo-300 flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5" />
+                      <Film className="w-3.5 h-3.5" />
                       Help Grow the Penguin View Library!
                     </p>
                     <p className="text-[11px] text-slate-400">

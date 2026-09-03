@@ -8,7 +8,7 @@ import {
 import { setDoc, doc, getDoc } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { LiquidGlassCard } from './LiquidGlassCard';
-import { Mail, Lock, User, Sparkles, Film, Eye } from 'lucide-react';
+import { Mail, Lock, User, Film, Eye } from 'lucide-react';
 
 interface AuthProps {
   onAuthSuccess: (uid: string) => void;
@@ -160,14 +160,14 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onDemoLogin }) => {
 
       <LiquidGlassCard id="auth-card" className="w-full max-w-md" intensity="glass">
         <h2 className="text-2xl font-semibold text-white mb-6 font-display flex items-center gap-2">
-          <Sparkles className="w-5 h-5 text-sky-400 animate-pulse" />
+          <Film className="w-5 h-5 text-sky-400" />
           {isRegistering ? 'Create Account' : 'Welcome Back'}
         </h2>
 
         {error && (error.includes('operation-not-allowed') || error.includes('auth/operation-not-allowed')) ? (
           <div className="p-3.5 mb-5 text-sm bg-indigo-950/60 border border-indigo-500/40 rounded-xl text-indigo-200 animate-fade-in">
             <p className="font-semibold mb-1 flex items-center gap-1.5 text-indigo-300">
-              <Sparkles className="w-4 h-4 text-sky-400" />
+              <Film className="w-4 h-4 text-sky-400" />
               Firebase Auth provider is disabled
             </p>
             <p className="text-[11px] text-indigo-300/80 mb-3 leading-relaxed">

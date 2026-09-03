@@ -7,7 +7,6 @@ import {
   Copy, 
   Users, 
   Tv, 
-  Sparkles, 
   MessageSquare, 
   Film,
   ExternalLink,

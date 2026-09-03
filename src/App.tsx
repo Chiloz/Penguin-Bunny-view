@@ -13,7 +13,7 @@ import { PullToRefresh } from './components/PullToRefresh';
 import { WelcomePopup } from './components/WelcomePopup';
 import { UploadProvider } from './context/UploadContext';
 import { UploadQueueBar } from './components/UploadQueueBar';
-import { Sparkles, Film } from 'lucide-react';
+import { Film } from 'lucide-react';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);

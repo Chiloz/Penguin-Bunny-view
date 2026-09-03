@@ -9,7 +9,6 @@ import {
   CheckCircle2, 
   XCircle, 
   Mail, 
-  Sparkles,
   AlertCircle,
   ArrowLeft,
   ChevronLeft,
@@ -229,7 +228,7 @@ export const AdminRequestsDrawer: React.FC<AdminRequestsDrawerProps> = ({
             </div>
           ) : filteredRequests.length === 0 ? (
             <div className="text-center py-16 space-y-2 text-slate-500">
-              <Sparkles className="w-8 h-8 mx-auto text-slate-600" />
+              <CheckCircle2 className="w-8 h-8 mx-auto text-slate-600" />
               <p className="text-xs font-medium">No {statusFilter} requests at the moment.</p>
             </div>
           ) : (

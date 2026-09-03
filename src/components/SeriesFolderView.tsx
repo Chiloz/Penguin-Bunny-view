@@ -4,7 +4,6 @@ import {
   Play, 
   Folder, 
   Download, 
-  Sparkles, 
   Film, 
   Clock, 
   Plus, 
@@ -214,7 +213,7 @@ export const SeriesFolderView: React.FC<SeriesFolderViewProps> = ({
             onClick={onRequestEpisodes}
             className="text-xs text-sky-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer self-start sm:self-auto font-medium"
           >
-            <Sparkles className="w-3.5 h-3.5" />
+            <Plus className="w-3.5 h-3.5" />
             Request missing episode / season
           </button>
         </div>

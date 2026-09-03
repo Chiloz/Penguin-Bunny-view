@@ -19,7 +19,6 @@ import {
   Trash2, 
   Image as ImageIcon, 
   Film, 
-  Sparkles, 
   User as UserIcon,
   Play,
   RotateCcw,
@@ -341,7 +340,7 @@ export const WatchList: React.FC<WatchListProps> = ({
         <LiquidGlassCard className="animate-fade-in border-sky-500/20 shadow-xl">
           <form onSubmit={handleAddItem} className="space-y-4">
             <h4 className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-sky-400" />
+              <Plus className="w-4 h-4 text-sky-400" />
               Add a New Title
             </h4>
 

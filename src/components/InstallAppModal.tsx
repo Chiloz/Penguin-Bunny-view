@@ -8,7 +8,6 @@ import {
   PlusSquare, 
   X, 
   Check, 
-  Sparkles,
   ExternalLink,
   ChevronRight
 } from 'lucide-react';
@@ -83,7 +82,6 @@ export const InstallAppModal: React.FC<InstallAppModalProps> = ({ isOpen, onClos
               <div>
                 <h3 className="text-base sm:text-lg font-bold text-white font-display flex items-center gap-2">
                   Install Penguin View App
-                  <Sparkles className="w-4 h-4 text-sky-400" />
                 </h3>
                 <p className="text-xs text-slate-400">
                   Full screen movies without browser tabs, faster launching & offline support

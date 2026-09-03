@@ -19,7 +19,7 @@ import {
   X, 
   Users, 
   Plus, 
-  Sparkles, 
+  Crown, 
   Play, 
   Check, 
   Film,
@@ -83,7 +83,7 @@ const CHAT_THEMES = [
   { 
     id: 'bubbles', 
     label: 'Bouncing Bubbles', 
-    icon: Sparkles, 
+    icon: Droplets, 
     bgClass: 'bg-gradient-to-b from-[#061838] via-[#0c2e6b] to-[#040f26]',
     accentGlow: 'rgba(56, 189, 248, 0.35)',
     bubbleMeClass: 'bg-gradient-to-r from-sky-400 to-indigo-500 text-white shadow-sky-400/30',
@@ -119,7 +119,7 @@ const CHAT_THEMES = [
   { 
     id: 'gold', 
     label: 'Royal Gold', 
-    icon: Sparkles, 
+    icon: Crown, 
     bgClass: 'bg-gradient-to-b from-[#2b2106] via-[#47360a] to-[#171103]',
     accentGlow: 'rgba(245, 158, 11, 0.35)',
     bubbleMeClass: 'bg-gradient-to-r from-amber-400 to-yellow-500 text-amber-950 font-bold shadow-amber-400/30',
@@ -731,7 +731,7 @@ export const MiniChatDrawer: React.FC<MiniChatDrawerProps> = ({
 
           {messages.length === 0 ? (
             <div className="text-center py-10 space-y-2 relative z-10">
-              <Sparkles className="w-7 h-7 text-sky-400 mx-auto opacity-70 animate-pulse" />
+              <MessageSquare className="w-7 h-7 text-sky-400 mx-auto opacity-70" />
               <p className="text-xs text-slate-200 font-semibold">No messages yet with {selectedFriend.name}.</p>
               <p className="text-[11px] text-slate-300 max-w-[260px] mx-auto">Say hello! Tap messages to add emoji reactions, or pick a shared theme!</p>
             </div>

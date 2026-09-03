@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Sparkles, ArrowDown } from 'lucide-react';
+import { RefreshCw, ArrowDown } from 'lucide-react';
 
 interface PullToRefreshProps {
   children: React.ReactNode;

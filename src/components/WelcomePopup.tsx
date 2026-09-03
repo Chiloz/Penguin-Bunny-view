@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import confetti from 'canvas-confetti';
 import { 
-  Sparkles, 
   X, 
   Play, 
   Calendar, 

@@ -16,6 +16,12 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
+// Temporary directory for chunked uploads
+const CHUNKS_TEMP_DIR = path.join(UPLOADS_DIR, 'temp_chunks');
+if (!fs.existsSync(CHUNKS_TEMP_DIR)) {
+  fs.mkdirSync(CHUNKS_TEMP_DIR, { recursive: true });
+}
+
 // Default archive keys provided for instant usability, overridden by env if present
 const ARCHIVE_ACCESS_KEY = process.env.ARCHIVE_S3_ACCESS_KEY || 'XgsBgjpbB8qhGCak';
 const ARCHIVE_SECRET_KEY = process.env.ARCHIVE_S3_SECRET_KEY || 's0pBbUEfuqXG1crR';
@@ -39,6 +45,22 @@ const diskStorage = multer.diskStorage({
 const upload = multer({
   storage: diskStorage,
   limits: { fileSize: 1024 * 1024 * 1024 * 5 } // 5GB limit
+});
+
+// Setup multer for individual chunks (8-16MB per chunk, well within nginx 32MB limit)
+const chunkStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, CHUNKS_TEMP_DIR);
+  },
+  filename: (req, file, cb) => {
+    const unique = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    cb(null, `chunk_${unique}.part`);
+  }
+});
+
+const chunkUpload = multer({
+  storage: chunkStorage,
+  limits: { fileSize: 30 * 1024 * 1024 } // 30MB max per chunk
 });
 
 // API Routes
@@ -265,6 +287,7 @@ app.post('/api/archive/upload', upload.any(), async (req: Request, res: Response
       size: file.size,
       streamUrl: localStreamUrl,
       localStreamUrl: localStreamUrl,
+      downloadUrl: localStreamUrl,
       archiveStreamUrl: archiveStreamUrl || null,
       isImage,
       mediaType: mediaType || (isImage ? 'image' : 'movie'),
@@ -275,6 +298,161 @@ app.post('/api/archive/upload', upload.any(), async (req: Request, res: Response
     console.error('Upload handler error:', error);
     res.status(500).json({ error: error.message || 'Server error during upload' });
   }
+});
+
+// Resilient Chunked Upload: Receives 8-16MB chunks, bypassing proxy limits (e.g., 32MB max body size)
+app.post('/api/archive/upload-chunk', chunkUpload.single('chunk'), async (req: Request, res: Response) => {
+  try {
+    const file = req.file;
+    const { uploadId, chunkIndex, totalChunks, fileName, fileSize, title, seriesName, seasonNumber, episodeNumber, mediaType } = req.body;
+
+    if (!file) {
+      res.status(400).json({ error: 'No chunk file received' });
+      return;
+    }
+
+    if (!uploadId || chunkIndex === undefined || !totalChunks) {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      res.status(400).json({ error: 'Missing chunk metadata (uploadId, chunkIndex, totalChunks)' });
+      return;
+    }
+
+    const cIndex = parseInt(chunkIndex, 10);
+    const tChunks = parseInt(totalChunks, 10);
+    const safeUploadId = uploadId.replace(/[^a-zA-Z0-9_-]/g, '');
+
+    const uploadTempDir = path.join(CHUNKS_TEMP_DIR, safeUploadId);
+    if (!fs.existsSync(uploadTempDir)) {
+      fs.mkdirSync(uploadTempDir, { recursive: true });
+    }
+
+    const targetChunkPath = path.join(uploadTempDir, `part_${cIndex}`);
+    // Move uploaded chunk into position
+    fs.renameSync(file.path, targetChunkPath);
+
+    // If more chunks are pending, acknowledge receipt
+    if (cIndex < tChunks - 1) {
+      res.json({
+        success: true,
+        chunkIndex: cIndex,
+        totalChunks: tChunks,
+        received: true
+      });
+      return;
+    }
+
+    // FINAL CHUNK: Assemble complete file
+    const cleanOriginalName = (fileName || 'video.mp4').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const uniquePrefix = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const finalFilename = `${uniquePrefix}_${cleanOriginalName}`;
+    const finalFilePath = path.join(UPLOADS_DIR, finalFilename);
+
+    const writeStream = fs.createWriteStream(finalFilePath);
+
+    for (let i = 0; i < tChunks; i++) {
+      const partPath = path.join(uploadTempDir, `part_${i}`);
+      if (!fs.existsSync(partPath)) {
+        writeStream.destroy();
+        if (fs.existsSync(finalFilePath)) fs.unlinkSync(finalFilePath);
+        res.status(400).json({ error: `Missing chunk ${i} during assembly. Please retry upload.` });
+        return;
+      }
+      const partBuffer = fs.readFileSync(partPath);
+      writeStream.write(partBuffer);
+    }
+    
+    await new Promise<void>((resolve, reject) => {
+      writeStream.on('finish', () => resolve());
+      writeStream.on('error', reject);
+      writeStream.end();
+    });
+
+    // Clean up temporary chunk folder
+    try {
+      fs.rmSync(uploadTempDir, { recursive: true, force: true });
+    } catch (e) {
+      console.warn('Could not clean temp chunk dir:', e);
+    }
+
+    const stat = fs.statSync(finalFilePath);
+    const localStreamUrl = `/api/videos/${encodeURIComponent(finalFilename)}`;
+
+    // Optional background sync to Archive.org
+    let archiveStreamUrl = '';
+    const canUploadArchive = Boolean(ARCHIVE_ACCESS_KEY && ARCHIVE_SECRET_KEY);
+
+    if (canUploadArchive) {
+      const archiveMediaType = 'movies';
+      const archiveCollection = 'opensource_movies';
+
+      const baseSlug = (seriesName || title || 'video')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 30);
+
+      const timestamp = Date.now().toString(36);
+      const identifier = `penguin-view-${baseSlug}-${timestamp}`;
+      const cleanFilename = cleanOriginalName;
+      const s3Url = `https://s3.us.archive.org/${identifier}/${encodeURIComponent(cleanFilename)}`;
+      archiveStreamUrl = `https://archive.org/download/${identifier}/${encodeURIComponent(cleanFilename)}`;
+
+      (async () => {
+        try {
+          const fileStream = fs.createReadStream(finalFilePath);
+          await fetch(s3Url, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `LOW ${ARCHIVE_ACCESS_KEY}:${ARCHIVE_SECRET_KEY}`,
+              'x-archive-auto-make-bucket': '1',
+              'x-archive-meta-mediatype': archiveMediaType,
+              'x-archive-meta-collection': archiveCollection,
+              'x-archive-meta-title': title || seriesName || 'Penguin View Video',
+              'x-archive-meta-creator': 'Penguin View Community',
+              'Content-Type': 'video/mp4',
+              'Content-Length': stat.size.toString()
+            },
+            // @ts-ignore
+            body: fileStream,
+            duplex: 'half'
+          });
+          console.log(`Archive.org background upload completed for ${finalFilename}`);
+        } catch (s3Err) {
+          console.warn('Archive.org background upload notice:', s3Err);
+        }
+      })();
+    }
+
+    res.json({
+      success: true,
+      filename: finalFilename,
+      originalName: fileName || cleanOriginalName,
+      size: stat.size,
+      streamUrl: localStreamUrl,
+      localStreamUrl: localStreamUrl,
+      downloadUrl: localStreamUrl,
+      archiveStreamUrl: archiveStreamUrl || null,
+      isImage: false,
+      mediaType: mediaType || 'movie',
+      seasonNumber: seasonNumber ? parseInt(seasonNumber, 10) : 1,
+      episodeNumber: episodeNumber ? parseInt(episodeNumber, 10) : 1
+    });
+  } catch (error: any) {
+    console.error('Chunk upload handler error:', error);
+    res.status(500).json({ error: error.message || 'Server error during chunked upload' });
+  }
+});
+
+// Delete/abort temp chunks if user cancels
+app.delete('/api/archive/upload-chunk/:uploadId', (req: Request, res: Response) => {
+  const safeUploadId = req.params.uploadId.replace(/[^a-zA-Z0-9_-]/g, '');
+  const uploadTempDir = path.join(CHUNKS_TEMP_DIR, safeUploadId);
+  if (fs.existsSync(uploadTempDir)) {
+    try {
+      fs.rmSync(uploadTempDir, { recursive: true, force: true });
+    } catch {}
+  }
+  res.json({ success: true });
 });
 
 // Setup Vite middleware or static serving

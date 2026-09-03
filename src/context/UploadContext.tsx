@@ -3,6 +3,7 @@ import { doc, collection, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { MediaItem } from '../types';
 import confetti from 'canvas-confetti';
+import { uploadFileInChunks } from '../utils/chunkedUpload';
 
 export interface UploadJob {
   id: string;
@@ -36,18 +37,16 @@ const UploadContext = createContext<UploadContextType | undefined>(undefined);
 export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
-  const xhrMapRef = useRef<Map<string, XMLHttpRequest>>(new Map());
-  const speedTrackerRef = useRef<Map<string, { lastBytes: number; lastTime: number }>>(new Map());
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const activeCount = jobs.filter(j => j.status === 'uploading' || j.status === 'publishing').length;
 
   const cancelUpload = useCallback((jobId: string) => {
-    const xhr = xhrMapRef.current.get(jobId);
-    if (xhr) {
-      xhr.abort();
-      xhrMapRef.current.delete(jobId);
+    const controller = abortControllersRef.current.get(jobId);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(jobId);
     }
-    speedTrackerRef.current.delete(jobId);
 
     setJobs(prev => prev.filter(j => j.id !== jobId));
   }, []);
@@ -81,169 +80,119 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
 
     setJobs(prev => [initialJob, ...prev]);
-    // Automatically open or show the upload indicator
+    // Automatically open the drawer so user sees active progress
     setIsDrawerOpen(true);
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('title', jobTitle);
-    formData.append('mediaType', mediaPayload.type || 'movie');
-    if (mediaPayload.description) formData.append('description', mediaPayload.description);
+    const abortController = new AbortController();
+    abortControllersRef.current.set(jobId, abortController);
 
-    const xhr = new XMLHttpRequest();
-    xhrMapRef.current.set(jobId, xhr);
-    speedTrackerRef.current.set(jobId, { lastBytes: 0, lastTime: Date.now() });
-
-    // Progress handler with percentage and speed calculation
-    xhr.upload.onprogress = (event: ProgressEvent) => {
-      if (!event.lengthComputable) return;
-
-      const loaded = event.loaded;
-      const total = event.total;
-      const progress = Math.min(99, Math.round((loaded / total) * 100));
-
-      const now = Date.now();
-      const tracker = speedTrackerRef.current.get(jobId) || { lastBytes: 0, lastTime: now };
-      const deltaBytes = loaded - tracker.lastBytes;
-      const deltaTime = (now - tracker.lastTime) / 1000; // in seconds
-
-      let speedMBs = 0;
-      let timeRemainingSec = 0;
-
-      if (deltaTime >= 0.5 && deltaBytes > 0) {
-        speedMBs = parseFloat(((deltaBytes / (1024 * 1024)) / deltaTime).toFixed(1));
-        const remainingBytes = total - loaded;
-        if (speedMBs > 0) {
-          timeRemainingSec = Math.round(remainingBytes / (speedMBs * 1024 * 1024));
-        }
-        speedTrackerRef.current.set(jobId, { lastBytes: loaded, lastTime: now });
-      }
-
-      setJobs(prev =>
-        prev.map(j => {
-          if (j.id !== jobId) return j;
-          return {
-            ...j,
-            loadedBytes: loaded,
-            progress,
-            speedMBs: speedMBs > 0 ? speedMBs : j.speedMBs,
-            timeRemainingSec: timeRemainingSec > 0 ? timeRemainingSec : j.timeRemainingSec
-          };
-        })
-      );
-    };
-
-    // On Upload Complete
-    xhr.onload = async () => {
-      xhrMapRef.current.delete(jobId);
-      speedTrackerRef.current.delete(jobId);
-
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const resData = JSON.parse(xhr.responseText);
-          const finalStreamUrl = resData.streamUrl || resData.localStreamUrl;
-
-          // Update status to publishing
-          setJobs(prev =>
-            prev.map(j => (j.id === jobId ? { ...j, progress: 100, status: 'publishing' } : j))
-          );
-
-          // Save directly to Firestore media_items so friends and uploader immediately see it!
-          const itemDocRef = mediaPayload.id
-            ? doc(db, 'media_items', mediaPayload.id)
-            : doc(collection(db, 'media_items'));
-
-          const finalDocData = {
-            ...mediaPayload,
-            id: itemDocRef.id,
-            title: jobTitle,
-            type: mediaPayload.type || 'movie',
-            streamUrl: finalStreamUrl,
-            storageProvider: 'archive_org',
-            createdAt: mediaPayload.createdAt || serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-
-          await setDoc(itemDocRef, finalDocData, { merge: true });
-
-          // Update job to completed
-          setJobs(prev =>
-            prev.map(j =>
-              j.id === jobId
-                ? {
-                    ...j,
-                    status: 'completed',
-                    progress: 100,
-                    streamUrl: finalStreamUrl
-                  }
-                : j
-            )
-          );
-
-          // Trigger joyful celebration and in-app notification
-          try {
-            confetti({
-              particleCount: 70,
-              spread: 60,
-              origin: { y: 0.8 }
-            });
-          } catch {
-            // Ignore if confetti fails
+    // Launch resilient chunked upload
+    (async () => {
+      try {
+        const result = await uploadFileInChunks({
+          file,
+          title: jobTitle,
+          mediaType: mediaPayload.type || 'movie',
+          description: mediaPayload.description,
+          signal: abortController.signal,
+          onProgress: (loadedBytes, totalBytes, speedMBs, etaSeconds) => {
+            const progress = Math.min(99, Math.round((loadedBytes / totalBytes) * 100));
+            setJobs(prev =>
+              prev.map(j => {
+                if (j.id !== jobId) return j;
+                return {
+                  ...j,
+                  loadedBytes,
+                  progress,
+                  speedMBs: speedMBs > 0 ? speedMBs : j.speedMBs,
+                  timeRemainingSec: etaSeconds > 0 ? etaSeconds : j.timeRemainingSec
+                };
+              })
+            );
           }
+        });
 
-          window.dispatchEvent(
-            new CustomEvent('penguin-in-app-notification', {
-              detail: {
-                title: '🎬 Movie Live in Catalog!',
-                body: `"${jobTitle}" has finished uploading and is now available for you and your friends to stream!`,
-                icon: '🍿',
-                tag: 'Media Catalog'
-              }
-            })
-          );
-        } catch (err: any) {
-          console.error('Error finalizing uploaded media document:', err);
-          setJobs(prev =>
-            prev.map(j =>
-              j.id === jobId
-                ? {
-                    ...j,
-                    status: 'error',
-                    error: err.message || 'Failed to publish to catalog.'
-                  }
-                : j
-            )
-          );
-        }
-      } else {
-        let errorMsg = `Server error ${xhr.status}`;
-        try {
-          const errData = JSON.parse(xhr.responseText);
-          if (errData.error) errorMsg = errData.error;
-        } catch {
-          // ignore
-        }
+        abortControllersRef.current.delete(jobId);
+
+        const finalStreamUrl = result.streamUrl || result.localStreamUrl;
+
+        // Transition to publishing state
         setJobs(prev =>
-          prev.map(j => (j.id === jobId ? { ...j, status: 'error', error: errorMsg } : j))
+          prev.map(j => (j.id === jobId ? { ...j, progress: 100, status: 'publishing' } : j))
+        );
+
+        // Save directly to Firestore media_items
+        const itemDocRef = mediaPayload.id
+          ? doc(db, 'media_items', mediaPayload.id)
+          : doc(collection(db, 'media_items'));
+
+        const finalDocData = {
+          ...mediaPayload,
+          id: itemDocRef.id,
+          title: jobTitle,
+          type: mediaPayload.type || 'movie',
+          streamUrl: finalStreamUrl,
+          storageProvider: 'archive_org',
+          createdAt: mediaPayload.createdAt || serverTimestamp(),
+          updatedAt: serverTimestamp()
+        };
+
+        await setDoc(itemDocRef, finalDocData, { merge: true });
+
+        // Update job to completed
+        setJobs(prev =>
+          prev.map(j =>
+            j.id === jobId
+              ? {
+                  ...j,
+                  status: 'completed',
+                  progress: 100,
+                  streamUrl: finalStreamUrl
+                }
+              : j
+          )
+        );
+
+        // Joyful celebration and notification
+        try {
+          confetti({
+            particleCount: 70,
+            spread: 60,
+            origin: { y: 0.8 }
+          });
+        } catch {}
+
+        window.dispatchEvent(
+          new CustomEvent('penguin-in-app-notification', {
+            detail: {
+              title: '🎬 Movie Live in Catalog!',
+              body: `"${jobTitle}" has finished uploading and is now available to stream!`,
+              icon: '🍿',
+              tag: 'Media Catalog'
+            }
+          })
+        );
+      } catch (err: any) {
+        abortControllersRef.current.delete(jobId);
+        if (err.message === 'Upload cancelled') {
+          setJobs(prev => prev.filter(j => j.id !== jobId));
+          return;
+        }
+
+        console.error('Upload failed:', err);
+        setJobs(prev =>
+          prev.map(j =>
+            j.id === jobId
+              ? {
+                  ...j,
+                  status: 'error',
+                  error: err.message || 'Upload failed. Please try again.'
+                }
+              : j
+          )
         );
       }
-    };
-
-    // On Upload Error / Abort
-    xhr.onerror = () => {
-      xhrMapRef.current.delete(jobId);
-      speedTrackerRef.current.delete(jobId);
-      setJobs(prev =>
-        prev.map(j =>
-          j.id === jobId
-            ? { ...j, status: 'error', error: 'Network error occurred during upload.' }
-            : j
-        )
-      );
-    };
-
-    xhr.open('POST', '/api/archive/upload', true);
-    xhr.send(formData);
+    })();
 
     return jobId;
   }, []);

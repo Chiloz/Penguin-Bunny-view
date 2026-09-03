@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { 
   Film, 
   Tv, 
-  Sparkles, 
   Search, 
   Plus, 
   Folder, 
@@ -255,7 +254,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
         <div className="space-y-1 text-left">
           <div className="flex items-center gap-2">
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold tracking-wider uppercase bg-sky-500/20 text-sky-300 border border-sky-400/30 flex items-center gap-1.5">
-              <Sparkles className="w-3 h-3" />
+              <Film className="w-3 h-3" />
               Internet Archive Cloud Streaming
             </span>
             {isMasterAdmin && (
