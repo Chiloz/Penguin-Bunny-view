@@ -102,6 +102,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try {
         const result = await uploadFileInChunks({
           file,
+          uploadId: jobId,
           title: jobTitle,
           mediaType: mediaPayload.type || 'movie',
           description: mediaPayload.description,

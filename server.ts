@@ -379,8 +379,14 @@ app.post('/api/archive/upload-chunk', (req: Request, res: Response) => {
           }
           return res.status(400).json({ error: `Missing chunk ${i} during assembly. Please retry upload.` });
         }
-        const partBuffer = fs.readFileSync(partPath);
-        writeStream.write(partBuffer);
+        
+        // Stream chunk file safely with backpressure handling (constant RAM usage)
+        await new Promise<void>((resolve, reject) => {
+          const readStream = fs.createReadStream(partPath);
+          readStream.on('error', reject);
+          readStream.on('end', () => resolve());
+          readStream.pipe(writeStream, { end: false });
+        });
       }
       
       await new Promise<void>((resolve, reject) => {
@@ -464,6 +470,29 @@ app.post('/api/archive/upload-chunk', (req: Request, res: Response) => {
       return res.status(500).json({ error: error.message || 'Server error during chunked upload' });
     }
   });
+});
+
+// Check upload status and existing chunks for instant resumption
+app.get('/api/archive/upload-status/:uploadId', (req: Request, res: Response) => {
+  const safeUploadId = req.params.uploadId.replace(/[^a-zA-Z0-9_-]/g, '');
+  const uploadTempDir = path.join(CHUNKS_TEMP_DIR, safeUploadId);
+  if (!fs.existsSync(uploadTempDir)) {
+    return res.json({ exists: false, receivedChunks: [] });
+  }
+
+  try {
+    const files = fs.readdirSync(uploadTempDir);
+    const receivedChunks: number[] = [];
+    for (const f of files) {
+      if (f.startsWith('part_')) {
+        const idx = parseInt(f.replace('part_', ''), 10);
+        if (!isNaN(idx)) receivedChunks.push(idx);
+      }
+    }
+    res.json({ exists: true, receivedChunks });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to inspect chunk state' });
+  }
 });
 
 // Delete/abort temp chunks if user cancels
