@@ -27,7 +27,8 @@ import {
   RefreshCw,
   Info,
   HardDrive,
-  ExternalLink
+  ExternalLink,
+  Sparkles
 } from 'lucide-react';
 import { UserProfile, MediaItem, MediaSeason, MediaEpisode } from '../types';
 import { db } from '../firebase';
@@ -150,6 +151,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   const [archiveUrlInput, setArchiveUrlInput] = useState<string>('');
   const [isInspectingArchive, setIsInspectingArchive] = useState<boolean>(false);
   const [archiveInspectResult, setArchiveInspectResult] = useState<any>(null);
+  const [archiveSuggestions, setArchiveSuggestions] = useState<any[]>([]);
   const [previewPlayerOpen, setPreviewPlayerOpen] = useState<boolean>(false);
 
   // Method A (Single File Upload to Archive.org S3) State
@@ -268,6 +270,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
     setIsInspectingArchive(true);
     setError('');
+    setArchiveSuggestions([]);
 
     try {
       const res = await fetch('/api/archive/inspect', {
@@ -278,16 +281,27 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
       const data = await res.json();
       if (!res.ok) {
+        if (data.suggestions && data.suggestions.length > 0) {
+          setArchiveSuggestions(data.suggestions);
+        }
         throw new Error(data.error || 'Failed to inspect Archive.org link');
       }
 
       setArchiveInspectResult(data);
+      if (data.suggestions && data.suggestions.length > 0) {
+        setArchiveSuggestions(data.suggestions);
+      }
+
+      // If auto-corrected to another identifier (e.g. supergirl-48 -> supergirl-480-p)
+      if (data.autoCorrected && data.identifier) {
+        setArchiveUrlInput(`https://archive.org/details/${data.identifier}`);
+      }
 
       // Auto fill title, poster, description if blank
       if (!title) setTitle(data.title || '');
       if (!description) setDescription(data.description || '');
       if (!posterUrl && data.posterUrl) setPosterUrl(data.posterUrl);
-      if (data.year) setReleaseYear(data.year);
+      if (data.year && !releaseYear) setReleaseYear(data.year);
 
       // If movie:
       if (mediaType === 'movie' && data.files && data.files.length > 0) {
@@ -337,11 +351,17 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     const raw = archiveUrlInput.trim();
-    if (!raw) return;
+    if (!raw) {
+      setArchiveInspectResult(null);
+      setArchiveSuggestions([]);
+      return;
+    }
 
-    // Check if it contains archive.org or is an item slug
-    const looksLikeArchive = raw.includes('archive.org') || (raw.length >= 5 && !raw.includes(' ') && !raw.includes('http'));
-    if (!looksLikeArchive) return;
+    // Check if it looks like an Archive.org URL or complete identifier slug
+    const isArchiveUrl = raw.includes('archive.org/details/') || raw.includes('archive.org/download/') || raw.includes('archive.org/embed/');
+    const isLikelySlug = raw.length >= 6 && !raw.includes(' ') && !raw.includes('http') && !raw.endsWith('-') && !raw.endsWith('_') && !raw.endsWith('/');
+
+    if (!isArchiveUrl && !isLikelySlug) return;
 
     // Skip if already inspected this exact item
     if (archiveInspectResult && (archiveInspectResult.identifier === raw || raw.includes(archiveInspectResult.identifier))) {
@@ -350,7 +370,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
     const timer = setTimeout(() => {
       handleInspectArchive(raw);
-    }, 400);
+    }, 700);
 
     return () => clearTimeout(timer);
   }, [isOpen, archiveUrlInput, mediaType]);
@@ -1478,7 +1498,18 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                         </a>
                       </div>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        Paste the details link (e.g. <code className="text-sky-300 font-mono">https://archive.org/details/supergirl-480-p</code>) or identifier. Penguin View inspects the files and links the video stream automatically!
+                        Paste the details link (e.g.{' '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setArchiveUrlInput('https://archive.org/details/supergirl-480-p');
+                            handleInspectArchive('https://archive.org/details/supergirl-480-p');
+                          }}
+                          className="text-sky-300 font-mono underline hover:text-sky-200 cursor-pointer"
+                        >
+                          https://archive.org/details/supergirl-480-p
+                        </button>
+                        ) or identifier. Penguin View inspects the files and links the video stream automatically!
                       </p>
                     </div>
 
@@ -1487,15 +1518,30 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                         <input
                           type="text"
                           placeholder="https://archive.org/details/supergirl-480-p or item-id..."
-                          className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input pr-8"
+                          className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input pr-14"
                           value={archiveUrlInput}
                           onChange={(e) => setArchiveUrlInput(e.target.value)}
                         />
-                        {isInspectingArchive && (
-                          <div className="absolute right-2.5 top-1/2 -translate-y-1/2">
+                        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                          {archiveUrlInput && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setArchiveUrlInput('');
+                                setArchiveInspectResult(null);
+                                setArchiveSuggestions([]);
+                                setError('');
+                              }}
+                              className="text-slate-400 hover:text-slate-200 p-0.5 rounded cursor-pointer"
+                              title="Clear input"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {isInspectingArchive && (
                             <span className="animate-spin inline-block text-xs">⏳</span>
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -1516,6 +1562,32 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                       <div className="p-3 bg-sky-950/40 border border-sky-400/30 rounded-xl text-sky-300 text-xs flex items-center gap-2 animate-pulse">
                         <span className="animate-spin text-sm">⏳</span>
                         <span>Inspecting Archive.org metadata and searching for video files...</span>
+                      </div>
+                    )}
+
+                    {archiveSuggestions.length > 0 && !archiveInspectResult && (
+                      <div className="p-3 bg-sky-950/30 border border-sky-400/20 rounded-xl space-y-1.5">
+                        <span className="text-[11px] font-medium text-slate-300 flex items-center gap-1">
+                          <Sparkles className="w-3 h-3 text-sky-400" />
+                          <span>Matching Archive.org items (click to inspect):</span>
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {archiveSuggestions.map((s: any) => (
+                            <button
+                              key={s.identifier}
+                              type="button"
+                              onClick={() => {
+                                setArchiveUrlInput(`https://archive.org/details/${s.identifier}`);
+                                handleInspectArchive(s.identifier);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-sky-500/10 hover:bg-sky-500/25 text-[11px] text-sky-300 hover:text-sky-100 border border-sky-400/20 cursor-pointer flex items-center gap-1.5 transition-colors"
+                            >
+                              <Film className="w-3 h-3 text-sky-400 shrink-0" />
+                              <span className="truncate max-w-[200px]">{s.title || s.identifier}</span>
+                              <span className="text-[10px] text-slate-400 font-mono">({s.identifier})</span>
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -1542,6 +1614,13 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         </div>
+
+                        {archiveInspectResult.autoCorrected && (
+                          <div className="text-[11px] bg-sky-500/20 text-sky-200 px-2.5 py-1.5 rounded-lg border border-sky-400/30 flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+                            <span>Auto-resolved identifier from "{archiveInspectResult.originalIdentifier}" to <strong>"{archiveInspectResult.title}"</strong> ({archiveInspectResult.identifier})</span>
+                          </div>
+                        )}
 
                         {/* If movie: Show stream file selection and preview */}
                         {mediaType === 'movie' && archiveInspectResult.files && archiveInspectResult.files.length > 0 && (

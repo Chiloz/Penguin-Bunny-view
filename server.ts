@@ -85,6 +85,75 @@ app.get('/api/archive/status', (req: Request, res: Response) => {
   });
 });
 
+// Helper to detect streamable video files from Archive.org
+function isArchiveVideoFile(f: any): boolean {
+  if (!f || !f.name) return false;
+  const lowerName = f.name.toLowerCase();
+  const lowerFormat = (f.format || '').toLowerCase();
+
+  // Exclude non-video files & preview image contact sheets
+  if (
+    lowerName.endsWith('_thumb.jpg') ||
+    lowerName.endsWith('.xml') ||
+    lowerName.endsWith('.sqlite') ||
+    lowerName.endsWith('.torrent') ||
+    lowerName.endsWith('.txt') ||
+    lowerName.endsWith('.json') ||
+    lowerName.endsWith('.gif') ||
+    lowerName.endsWith('.png')
+  ) {
+    return false;
+  }
+
+  const videoExts = ['.mp4', '.mkv', '.webm', '.m4v', '.avi', '.mov', '.wmv', '.flv', '.mpg', '.mpeg', '.ts', '.m2ts', '.ogv', '.3gp'];
+  const hasExt = videoExts.some(ext => lowerName.endsWith(ext));
+  const hasFormat = (
+    lowerFormat.includes('h.264') ||
+    lowerFormat.includes('mpeg') ||
+    lowerFormat.includes('video') ||
+    lowerFormat.includes('matroska') ||
+    lowerFormat.includes('webm') ||
+    lowerFormat.includes('mp4')
+  );
+
+  return hasExt || hasFormat;
+}
+
+// Helper to extract clean identifier and optional preferred filename from user input
+function extractArchiveIdentifier(rawInput: string): { identifier: string; preferredFilename?: string } {
+  let input = rawInput.trim();
+  // Strip protocol
+  input = input.replace(/^[a-zA-Z]+:\/\//, '');
+
+  // Extract from archive.org domain patterns (e.g. archive.org/details/..., archive.org/download/..., archive.org/embed/..., archive.org/stream/...)
+  const domainPattern = /(?:(?:www|ia[0-9]+)\.)?archive\.org\/(?:details|download|embed|stream)\/([^/?#]+)(?:\/([^?#]+))?/i;
+  const match = input.match(domainPattern);
+
+  if (match) {
+    const id = decodeURIComponent(match[1].trim());
+    let preferredFilename = match[2] ? decodeURIComponent(match[2].trim()) : undefined;
+    if (preferredFilename && !isArchiveVideoFile({ name: preferredFilename })) {
+      preferredFilename = undefined;
+    }
+    return { identifier: id, preferredFilename };
+  }
+
+  // If identifier or direct slug was given
+  let id = input.split('?')[0].split('#')[0].replace(/\/+$/, '');
+  if (id.includes('/')) {
+    const parts = id.split('/');
+    id = parts[0] || parts[parts.length - 1];
+  }
+  id = decodeURIComponent(id).trim();
+
+  // If user passed filename like identifier/filename.mp4 or identifier.mp4
+  if (isArchiveVideoFile({ name: id })) {
+    id = id.replace(/\.[^/.]+$/, '');
+  }
+
+  return { identifier: id };
+}
+
 // Method B: Inspect any Archive.org item link and extract streamable videos
 app.post('/api/archive/inspect', async (req: Request, res: Response) => {
   try {
@@ -94,53 +163,115 @@ app.post('/api/archive/inspect', async (req: Request, res: Response) => {
       return;
     }
 
-    // Extract identifier from URL like https://archive.org/details/ITEM_ID or direct identifier
-    let identifier = urlOrId.trim();
-    if (identifier.includes('archive.org/details/')) {
-      const parts = identifier.split('archive.org/details/');
-      identifier = parts[1].split('/')[0].split('?')[0];
-    } else if (identifier.includes('archive.org/download/')) {
-      const parts = identifier.split('archive.org/download/');
-      identifier = parts[1].split('/')[0].split('?')[0];
-    }
+    const { identifier: rawIdentifier, preferredFilename } = extractArchiveIdentifier(urlOrId);
+    let identifier = rawIdentifier;
 
     if (!identifier) {
       res.status(400).json({ error: 'Invalid Archive.org URL or identifier' });
       return;
     }
 
-    // Fetch public metadata from Archive.org
-    const metaResponse = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`);
-    if (!metaResponse.ok) {
-      res.status(404).json({ error: `Archive.org item "${identifier}" not found or is private.` });
+    // Step 1: Fetch public metadata from Archive.org
+    let metaResponse = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`, {
+      headers: { 'User-Agent': 'PenguinView/2.0' }
+    });
+
+    let data: any = metaResponse.ok ? await metaResponse.json() : null;
+    let files: any[] = data?.files || [];
+    let videoFiles = files.filter(isArchiveVideoFile);
+    let autoCorrected = false;
+    let resolvedIdentifier = identifier;
+    let suggestions: { identifier: string; title: string; mediatype?: string }[] = [];
+
+    // Step 2: Fallback search if item is not found or has 0 video streams (e.g. typo, truncated identifier like 'supergirl-48' instead of 'supergirl-480-p')
+    if (!metaResponse.ok || videoFiles.length === 0) {
+      const cleanSearch = identifier.replace(/[^a-zA-Z0-9_-]/g, '').trim();
+      if (cleanSearch.length >= 3) {
+        try {
+          const searchUrl = `https://archive.org/advancedsearch.php?q=(identifier:*${encodeURIComponent(cleanSearch)}*+OR+title:*${encodeURIComponent(cleanSearch)}*)&fl[]=identifier,title,mediatype,publicdate,downloads&sort[]=downloads+desc&output=json&rows=6`;
+          const searchRes = await fetch(searchUrl, { headers: { 'User-Agent': 'PenguinView/2.0' } });
+          if (searchRes.ok) {
+            const searchData: any = await searchRes.json();
+            const docs: any[] = searchData?.response?.docs || [];
+            
+            // Collect suggestions
+            suggestions = docs.map(d => ({
+              identifier: d.identifier,
+              title: d.title || d.identifier,
+              mediatype: d.mediatype
+            }));
+
+            // Filter for video/movie candidate
+            const movieDocs = docs.filter(d => 
+              d.mediatype === 'movies' || 
+              d.identifier?.toLowerCase().includes('480') || 
+              d.identifier?.toLowerCase().includes('720') || 
+              d.identifier?.toLowerCase().includes('1080') || 
+              d.identifier?.toLowerCase().includes('video')
+            );
+            const candidate = movieDocs[0] || docs.find(d => d.identifier !== identifier);
+
+            if (candidate && candidate.identifier) {
+              const candRes = await fetch(`https://archive.org/metadata/${encodeURIComponent(candidate.identifier)}`, {
+                headers: { 'User-Agent': 'PenguinView/2.0' }
+              });
+              if (candRes.ok) {
+                const candData: any = await candRes.json();
+                const candFiles = (candData.files || []).filter(isArchiveVideoFile);
+                if (candFiles.length > 0) {
+                  // Found matching item with video streams!
+                  resolvedIdentifier = candidate.identifier;
+                  data = candData;
+                  files = candData.files || [];
+                  videoFiles = candFiles;
+                  autoCorrected = true;
+                }
+              }
+            }
+          }
+        } catch (searchErr) {
+          console.warn('Archive fallback search failed:', searchErr);
+        }
+      }
+    }
+
+    if (videoFiles.length === 0) {
+      res.status(404).json({
+        error: `Could not find any streamable video files for Archive.org item "${identifier}".`,
+        identifier,
+        suggestions
+      });
       return;
     }
 
-    const data: any = await metaResponse.json();
-    const metadata = data.metadata || {};
-    const files: any[] = data.files || [];
+    const metadata = data?.metadata || {};
 
-    // Filter for streamable video files (.mp4, .mkv, .webm, .m4v)
-    const videoFiles = files.filter(f => {
-      if (!f.name) return false;
-      const lower = f.name.toLowerCase();
-      const isVideoExt = lower.endsWith('.mp4') || lower.endsWith('.mkv') || lower.endsWith('.webm') || lower.endsWith('.m4v');
-      // Exclude internal IA preview thumbnails
-      const isInternal = lower.endsWith('_thumb.jpg');
-      return isVideoExt && !isInternal;
-    });
-
-    // Natural sort video files, prioritizing original uploaded master files over IA-transcoded derivatives
+    // Sort video files:
+    // If user provided a specific filename, put it first.
+    // Otherwise prioritize original uploaded master files over IA-transcoded derivatives,
+    // and prefer standard .mp4 over other formats for maximum browser compatibility.
     videoFiles.sort((a, b) => {
+      if (preferredFilename) {
+        if (a.name === preferredFilename) return -1;
+        if (b.name === preferredFilename) return 1;
+      }
+
       const aIsDeriv = a.name.toLowerCase().includes('.ia.mp4') || a.name.toLowerCase().includes('_ia.mp4') || a.source === 'derivative';
       const bIsDeriv = b.name.toLowerCase().includes('.ia.mp4') || b.name.toLowerCase().includes('_ia.mp4') || b.source === 'derivative';
       if (aIsDeriv !== bIsDeriv) {
         return aIsDeriv ? 1 : -1; // Original upload first
       }
+
+      const aIsMp4 = a.name.toLowerCase().endsWith('.mp4');
+      const bIsMp4 = b.name.toLowerCase().endsWith('.mp4');
+      if (aIsMp4 !== bIsMp4) {
+        return aIsMp4 ? -1 : 1;
+      }
+
       return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
     });
 
-    const serverPrefix = `https://archive.org/download/${identifier}/`;
+    const serverPrefix = `https://archive.org/download/${resolvedIdentifier}/`;
 
     const mappedFiles = videoFiles.map((f, idx) => ({
       name: f.name,
@@ -156,20 +287,25 @@ app.post('/api/archive/inspect', async (req: Request, res: Response) => {
 
     // Find thumbnail if available
     let posterUrl = '';
-    const thumbFile = files.find(f => f.name && (f.name.endsWith('.jpg') || f.name.endsWith('.png')));
+    const thumbFile = files.find(f => f.name && (f.name.endsWith('.jpg') || f.name.endsWith('.png') || f.name.endsWith('.webp')));
     if (thumbFile) {
       posterUrl = `${serverPrefix}${encodeURIComponent(thumbFile.name)}`;
+    } else if (metadata.identifier) {
+      posterUrl = `https://archive.org/services/img/${encodeURIComponent(resolvedIdentifier)}`;
     }
 
     res.json({
       success: true,
-      identifier,
-      title: metadata.title || identifier,
+      identifier: resolvedIdentifier,
+      originalIdentifier: autoCorrected ? rawIdentifier : undefined,
+      autoCorrected,
+      title: metadata.title || resolvedIdentifier,
       description: metadata.description || '',
-      year: metadata.year ? parseInt(metadata.year, 10) : undefined,
+      year: metadata.year ? parseInt(metadata.year, 10) : metadata.date ? parseInt(metadata.date.slice(0, 4), 10) : undefined,
       posterUrl,
       filesCount: mappedFiles.length,
-      files: mappedFiles
+      files: mappedFiles,
+      suggestions: suggestions.length > 0 ? suggestions : undefined
     });
   } catch (error: any) {
     console.error('Archive inspect error:', error);
