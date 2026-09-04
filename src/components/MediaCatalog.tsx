@@ -482,15 +482,17 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
       )}
 
       {/* Upload Studio Modal */}
-      <MediaUploadModal
-        isOpen={isUploadModalOpen}
-        onClose={() => {
-          setIsUploadModalOpen(false);
-          setEditingItem(null);
-        }}
-        currentUser={currentUser}
-        existingMediaItem={editingItem}
-      />
+      {isUploadModalOpen && (
+        <MediaUploadModal
+          isOpen={isUploadModalOpen}
+          onClose={() => {
+            setIsUploadModalOpen(false);
+            setEditingItem(null);
+          }}
+          currentUser={currentUser}
+          existingMediaItem={editingItem}
+        />
+      )}
 
       {/* Viewer Request Title / Uploader Rights Modal */}
       <MediaRequestModal

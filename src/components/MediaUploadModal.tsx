@@ -231,7 +231,32 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     setUploadProgressText('Upload started in background.');
   };
 
-  if (!isOpen) return null;
+  // Sync state when editing existingMediaItem or opening modal
+  useEffect(() => {
+    if (isOpen) {
+      if (existingMediaItem) {
+        setMediaType(existingMediaItem.type || 'series');
+        setTitle(existingMediaItem.title || '');
+        setDescription(existingMediaItem.description || '');
+        setPosterUrl(existingMediaItem.posterUrl || '');
+        setTrailerUrl(existingMediaItem.trailerUrl || '');
+        setGenresInput((existingMediaItem.genres || []).join(', ') || 'Anime, Action');
+        setReleaseYear(existingMediaItem.releaseYear || 2024);
+        setAudioLang(existingMediaItem.audioLang || 'Japanese (Eng Sub)');
+        setMovieStreamUrl(existingMediaItem.streamUrl || '');
+        setMovieDuration(existingMediaItem.duration || 110);
+        setSeasons(existingMediaItem.seasons || [
+          {
+            seasonNumber: 1,
+            seasonTitle: 'Season 1',
+            episodes: []
+          }
+        ]);
+      }
+      setError('');
+      setSaveSuccess(false);
+    }
+  }, [isOpen, existingMediaItem]);
 
   // Method B: Inspect Archive.org link
   const handleInspectArchive = async (overrideUrl?: string) => {
@@ -310,6 +335,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
   // Debounced auto-inspection when user types or pastes an Archive.org URL
   useEffect(() => {
+    if (!isOpen) return;
     const raw = archiveUrlInput.trim();
     if (!raw) return;
 
@@ -327,7 +353,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     }, 400);
 
     return () => clearTimeout(timer);
-  }, [archiveUrlInput, mediaType]);
+  }, [isOpen, archiveUrlInput, mediaType]);
 
   // Method A: Direct Upload to Archive.org S3
   const handleUploadFileToArchive = async () => {
@@ -825,6 +851,8 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       setIsSaving(false);
     }
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-xl animate-in fade-in duration-200 font-sans overflow-y-auto">
@@ -1875,7 +1903,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                       </div>
                     ) : (
                       <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                        {seasons[activeSeasonIndex].episodes.map((ep, epIdx) => (
+                        {(seasons[activeSeasonIndex]?.episodes || []).map((ep, epIdx) => (
                           <div key={epIdx} className="flex items-center gap-2 bg-white/5 p-2 rounded-xl border border-white/5 text-xs">
                             <span className="w-6 text-[10px] font-mono text-sky-400 shrink-0">
                               #{ep.episodeNumber}
