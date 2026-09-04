@@ -31,7 +31,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { UserProfile, MediaItem, MediaSeason, MediaEpisode } from '../types';
-import { db } from '../firebase';
+import { db, cleanForFirestore } from '../firebase';
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { LiquidGlassCard } from './LiquidGlassCard';
 import { useUpload } from '../context/UploadContext';
@@ -213,7 +213,6 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       .filter(Boolean);
 
     const mediaPayload: Partial<MediaItem> = {
-      id: existingMediaItem?.id,
       type: mediaType,
       title: effectiveTitle,
       description: description.trim(),
@@ -222,13 +221,21 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       trailerUrl: trailerUrl.trim(),
       genres: genresArray,
       releaseYear: releaseYear || 2024,
-      duration: movieDuration,
-      audioLang: mediaType === 'anime' ? audioLang : undefined,
       uploadedByUid: currentUser.uid,
       uploadedByName: currentUser.name
     };
 
-    startUpload(selectedFile, mediaPayload);
+    if (existingMediaItem?.id) {
+      mediaPayload.id = existingMediaItem.id;
+    }
+    if (movieDuration > 0) {
+      mediaPayload.duration = movieDuration;
+    }
+    if (mediaType === 'anime' && audioLang) {
+      mediaPayload.audioLang = audioLang;
+    }
+
+    startUpload(selectedFile, cleanForFirestore(mediaPayload));
     setIsDrawerOpen(true);
     setUploadProgressText('Upload started in background.');
   };
@@ -315,13 +322,18 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
       // If series/anime: populate current season with the inspected files!
       if (mediaType !== 'movie' && data.files && data.files.length > 0) {
-        const newEpisodes: MediaEpisode[] = data.files.map((f: any, idx: number) => ({
-          episodeNumber: idx + 1,
-          title: f.title || `Episode ${idx + 1}`,
-          streamUrl: f.streamUrl,
-          downloadUrl: f.downloadUrl,
-          duration: f.duration ? Math.round(f.duration / 60) : undefined
-        }));
+        const newEpisodes: MediaEpisode[] = data.files.map((f: any, idx: number) => {
+          const ep: MediaEpisode = {
+            episodeNumber: idx + 1,
+            title: f.title || `Episode ${idx + 1}`,
+            streamUrl: f.streamUrl || '',
+            downloadUrl: f.downloadUrl || ''
+          };
+          if (f.duration) {
+            ep.duration = Math.round(f.duration / 60);
+          }
+          return ep;
+        });
 
         setSeasons(prev => {
           const updated = [...prev];
@@ -836,26 +848,53 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
         trailerUrl: trailerUrl.trim(),
         genres: genresArray,
         releaseYear: releaseYear || 2024,
-        audioLang: mediaType === 'anime' ? audioLang : undefined,
         status: 'completed',
         uploadedByUid: currentUser.uid,
         uploadedByName: currentUser.name,
         updatedAt: serverTimestamp()
       };
 
-      if (mediaType === 'movie') {
-        mediaPayload.streamUrl = finalMovieStreamUrl;
-        mediaPayload.storageProvider = finalMovieStreamUrl.startsWith('local://') ? 'direct_url' : 'archive_org';
-        mediaPayload.duration = movieDuration;
-      } else {
-        mediaPayload.seasons = seasons;
+      if (mediaType === 'anime' && audioLang) {
+        mediaPayload.audioLang = audioLang;
       }
 
-      if (existingMediaItem?.id) {
-        await updateDoc(doc(db, 'media_items', existingMediaItem.id), mediaPayload);
+      if (mediaType === 'movie') {
+        mediaPayload.streamUrl = finalMovieStreamUrl;
+        if (finalMovieStreamUrl.includes('drive.google.com') || finalMovieStreamUrl.includes('docs.google.com')) {
+          mediaPayload.storageProvider = 'google_drive';
+        } else if (finalMovieStreamUrl.includes('archive.org')) {
+          mediaPayload.storageProvider = 'archive_org';
+        } else {
+          mediaPayload.storageProvider = 'direct_url';
+        }
+        if (movieDuration > 0) {
+          mediaPayload.duration = movieDuration;
+        }
       } else {
-        mediaPayload.createdAt = serverTimestamp();
-        await addDoc(collection(db, 'media_items'), mediaPayload);
+        mediaPayload.seasons = seasons.map(s => ({
+          seasonNumber: s.seasonNumber,
+          seasonTitle: s.seasonTitle || `Season ${s.seasonNumber}`,
+          episodes: (s.episodes || []).map(ep => {
+            const cleanEp: MediaEpisode = {
+              episodeNumber: ep.episodeNumber,
+              title: ep.title || `Episode ${ep.episodeNumber}`,
+              streamUrl: ep.streamUrl || ''
+            };
+            if (ep.downloadUrl) cleanEp.downloadUrl = ep.downloadUrl;
+            if (ep.duration) cleanEp.duration = ep.duration;
+            if (ep.thumbnailUrl) cleanEp.thumbnailUrl = ep.thumbnailUrl;
+            return cleanEp;
+          })
+        }));
+      }
+
+      const safePayload = cleanForFirestore(mediaPayload);
+
+      if (existingMediaItem?.id) {
+        await updateDoc(doc(db, 'media_items', existingMediaItem.id), safePayload);
+      } else {
+        safePayload.createdAt = serverTimestamp();
+        await addDoc(collection(db, 'media_items'), safePayload);
       }
 
       setSaveSuccess(true);
@@ -1701,18 +1740,40 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 )}
 
                 {/* Method C: Direct Stream URL */}
-                {uploadMode === 'direct_url' && mediaType === 'movie' && (
+                {uploadMode === 'direct_url' && (
                   <div className="p-4 bg-purple-950/20 border border-purple-500/20 rounded-2xl space-y-2">
-                    <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                      Direct MP4 / HLS / Google Drive Video Link
-                    </label>
-                    <input
-                      type="url"
-                      placeholder="https://.../movie.mp4 or Drive stream link"
-                      className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
-                      value={movieStreamUrl}
-                      onChange={(e) => setMovieStreamUrl(e.target.value)}
-                    />
+                    {mediaType === 'movie' ? (
+                      <>
+                        <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                          Direct MP4 / HLS / Google Drive Video Link
+                        </label>
+                        <input
+                          type="url"
+                          placeholder="https://.../movie.mp4 or https://drive.google.com/file/d/..."
+                          className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
+                          value={movieStreamUrl}
+                          onChange={(e) => setMovieStreamUrl(e.target.value)}
+                        />
+                        {movieStreamUrl.includes('drive.google.com') && (
+                          <div className="p-2.5 bg-sky-500/10 border border-sky-400/20 rounded-xl text-[11px] text-sky-200 flex items-start gap-2">
+                            <Info className="w-3.5 h-3.5 shrink-0 text-sky-400 mt-0.5" />
+                            <span>
+                              <strong>Google Drive link detected.</strong> Penguin View will stream this file with seeking and range support. Please ensure your Google Drive file's share setting is set to <em>"Anyone with the link can view"</em>.
+                            </span>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="p-3 bg-purple-500/10 border border-purple-400/20 rounded-xl text-xs text-purple-200 space-y-1">
+                        <p className="font-semibold flex items-center gap-1.5">
+                          <Info className="w-4 h-4 text-purple-400" />
+                          Multi-Episode Direct Links
+                        </p>
+                        <p className="text-[11px] text-purple-300">
+                          For TV Series and Anime, enter your Google Drive or direct stream links into the episode list below in each Season. You can also click "+ Add Episode" to add more.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -30,6 +30,41 @@ export enum OperationType {
   WRITE = 'write',
 }
 
+/**
+ * Recursively removes any `undefined` values from an object or array.
+ * Firebase Firestore strictly rejects any documents containing `undefined` with:
+ * "Unsupported field value: undefined"
+ */
+export function cleanForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => cleanForFirestore(item)) as unknown as T;
+  }
+  if (typeof data === 'object') {
+    // Preserve Firestore FieldValues (e.g. serverTimestamp), Dates, or Timestamps
+    if (
+      data instanceof Date ||
+      (data as any)?._methodName ||
+      (data as any)?.toMillis ||
+      (data as any)?.nanoseconds !== undefined
+    ) {
+      return data;
+    }
+    const cleaned: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== undefined) {
+        cleaned[key] = cleanForFirestore(value);
+      }
+    }
+    return cleaned as T;
+  }
+  return data;
+}
+
 export interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;

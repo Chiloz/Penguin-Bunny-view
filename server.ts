@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import { Readable } from 'stream';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -155,10 +156,11 @@ function extractArchiveIdentifier(rawInput: string): { identifier: string; prefe
 }
 
 // Method B: Inspect any Archive.org item link and extract streamable videos
-app.post('/api/archive/inspect', async (req: Request, res: Response) => {
+const handleArchiveInspect = async (req: Request, res: Response) => {
   try {
-    const { urlOrId } = req.body;
-    if (!urlOrId || typeof urlOrId !== 'string') {
+    const rawTarget = req.body?.urlOrId || req.body?.url || req.query?.urlOrId || req.query?.url;
+    const urlOrId = typeof rawTarget === 'string' ? rawTarget.trim() : '';
+    if (!urlOrId) {
       res.status(400).json({ error: 'URL or item identifier is required' });
       return;
     }
@@ -311,7 +313,10 @@ app.post('/api/archive/inspect', async (req: Request, res: Response) => {
     console.error('Archive inspect error:', error);
     res.status(500).json({ error: error.message || 'Failed to inspect Archive.org link' });
   }
-});
+};
+
+app.post('/api/archive/inspect', handleArchiveInspect);
+app.get('/api/archive/inspect', handleArchiveInspect);
 
 // High-performance video streaming endpoint with HTTP 206 Partial Content (Range requests)
 app.get('/api/videos/:filename', (req: Request, res: Response) => {
@@ -365,6 +370,71 @@ app.get('/api/videos/:filename', (req: Request, res: Response) => {
     };
     res.writeHead(200, head);
     fs.createReadStream(filePath).pipe(res);
+  }
+});
+
+// High-performance Google Drive streaming proxy with HTTP 206 Partial Content (Range requests)
+app.get('/api/drive/stream', async (req: Request, res: Response) => {
+  const fileId = req.query.id as string;
+  if (!fileId) {
+    res.status(400).send('Missing Google Drive file ID parameter (?id=...)');
+    return;
+  }
+
+  // Sanitize file ID
+  const cleanId = fileId.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!cleanId) {
+    res.status(400).send('Invalid Google Drive file ID');
+    return;
+  }
+
+  try {
+    const driveUrl = `https://drive.usercontent.google.com/download?id=${cleanId}&export=download&authuser=0&confirm=t`;
+    
+    // Forward Range header if requested by client HTML5 video element
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': '*/*'
+    };
+    if (req.headers.range) {
+      headers['Range'] = req.headers.range as string;
+    }
+
+    let driveRes = await fetch(driveUrl, {
+      method: 'GET',
+      headers,
+      redirect: 'follow'
+    });
+
+    if (!driveRes.ok && driveRes.status !== 206) {
+      const fallbackUrl = `https://drive.google.com/uc?export=download&id=${cleanId}&confirm=t`;
+      driveRes = await fetch(fallbackUrl, { method: 'GET', headers, redirect: 'follow' });
+    }
+
+    if (!driveRes.ok && driveRes.status !== 206) {
+      res.status(driveRes.status).send(`Failed to stream from Google Drive (Status: ${driveRes.status}). Verify the file is shared as "Anyone with the link can view".`);
+      return;
+    }
+
+    res.status(driveRes.status);
+    ['content-range', 'accept-ranges', 'content-length', 'content-type'].forEach(header => {
+      const val = driveRes.headers.get(header);
+      if (val) res.setHeader(header, val);
+    });
+    if (!res.getHeader('content-type')) {
+      res.setHeader('content-type', 'video/mp4');
+    }
+
+    if (driveRes.body) {
+      // @ts-ignore
+      const nodeStream = Readable.fromWeb(driveRes.body as any);
+      nodeStream.pipe(res);
+    } else {
+      res.end();
+    }
+  } catch (err: any) {
+    console.error('Google Drive stream error:', err);
+    res.status(500).send('Error streaming Google Drive video: ' + err.message);
   }
 });
 

@@ -38,6 +38,8 @@ import {
   SkipForward,
   SkipBack,
   AlertCircle,
+  AlertTriangle,
+  ExternalLink,
   Tv,
   ScreenShare
 } from 'lucide-react';
@@ -68,6 +70,26 @@ const QUICK_COMMENTS = [
   "Rewind that! ⏪"
 ];
 
+export function resolvePlayableStreamUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  if (rawUrl.includes('drive.google.com') || rawUrl.includes('docs.google.com')) {
+    const match = rawUrl.match(/(?:file\/d\/|id=)([a-zA-Z0-9_-]{20,})/);
+    if (match) {
+      return `/api/drive/stream?id=${match[1]}`;
+    }
+  }
+  return rawUrl;
+}
+
+export function getGoogleDriveId(rawUrl: string): string | null {
+  if (!rawUrl) return null;
+  if (rawUrl.includes('drive.google.com') || rawUrl.includes('docs.google.com')) {
+    const match = rawUrl.match(/(?:file\/d\/|id=)([a-zA-Z0-9_-]{20,})/);
+    return match ? match[1] : null;
+  }
+  return null;
+}
+
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({ 
   roomId, 
   currentUser, 
@@ -87,6 +109,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [playlistFiles, setPlaylistFiles] = useState<File[]>([]);
   const [currentEpisodeIndex, setCurrentEpisodeIndex] = useState<number>(0);
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [useIframeFallback, setUseIframeFallback] = useState<boolean>(false);
+  const [streamLoadError, setStreamLoadError] = useState<string>('');
 
   // Sync Room state
   const [room, setRoom] = useState<Room | null>(null);
@@ -312,9 +336,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       // Auto-load cloud stream URL if present and user has not switched to local file mode
       if (roomData.streamUrl && !videoFile && !userOptedLocalRef.current) {
         if (!roomData.streamUrl.startsWith('local://')) {
+          const playableUrl = resolvePlayableStreamUrl(roomData.streamUrl);
           setVideoUrl(prev => {
-            if (!prev || (prev !== roomData.streamUrl && !prev.startsWith('blob:'))) {
-              return roomData.streamUrl!;
+            if (!prev || (prev !== playableUrl && !prev.startsWith('blob:'))) {
+              return playableUrl;
             }
             return prev;
           });
@@ -808,7 +833,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onClick={() => {
                   userOptedLocalRef.current = false;
                   setHybridMode('cloud');
-                  setVideoUrl(room.streamUrl!);
+                  setVideoUrl(resolvePlayableStreamUrl(room.streamUrl!));
                 }}
                 className="w-full py-2.5 bg-gradient-to-r from-sky-400 to-indigo-500 hover:from-sky-300 hover:to-indigo-400 text-white rounded-xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95"
               >
@@ -961,19 +986,66 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               : 'w-full h-full flex-grow'
           } ${!isHudVisible ? 'cursor-none' : ''}`}
         >
-          {/* Real local HTML5 Video object */}
-          <video
-            ref={videoRef}
-            src={videoUrl}
-            className="w-full h-full object-contain"
-            onPlay={handlePlay}
-            onPause={handlePause}
-            onTimeUpdate={handleTimeUpdate}
-            onLoadedMetadata={handleLoadedMetadata}
-            onEnded={handleNextEpisode}
-            onClick={togglePlayPause}
-            playsInline
-          />
+          {/* Real local HTML5 Video object or Google Drive Iframe Fallback */}
+          {useIframeFallback && getGoogleDriveId(room?.streamUrl || videoUrl) ? (
+            <div className="w-full h-full flex flex-col items-center justify-center bg-black relative">
+              <iframe
+                src={`https://drive.google.com/file/d/${getGoogleDriveId(room?.streamUrl || videoUrl)}/preview`}
+                className="w-full h-full border-0"
+                allow="autoplay; fullscreen"
+              />
+            </div>
+          ) : (
+            <video
+              ref={videoRef}
+              src={videoUrl}
+              className="w-full h-full object-contain"
+              onPlay={handlePlay}
+              onPause={handlePause}
+              onTimeUpdate={handleTimeUpdate}
+              onLoadedMetadata={handleLoadedMetadata}
+              onEnded={handleNextEpisode}
+              onClick={togglePlayPause}
+              onError={() => {
+                const driveId = getGoogleDriveId(room?.streamUrl || videoUrl);
+                if (driveId) {
+                  setStreamLoadError('Google Drive direct streaming could not load. Make sure the file sharing is "Anyone with link can view", or use the Drive Embed player.');
+                } else {
+                  setStreamLoadError('Error loading video stream from source.');
+                }
+              }}
+              playsInline
+            />
+          )}
+
+          {/* Stream Load Error Notice Banner */}
+          {streamLoadError && (
+            <div className="absolute top-4 left-4 right-4 z-50 p-3 bg-red-950/90 border border-red-500/40 rounded-xl text-red-200 text-xs flex items-center justify-between gap-3 shadow-2xl backdrop-blur-md">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                <span>{streamLoadError}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {getGoogleDriveId(room?.streamUrl || videoUrl) && (
+                  <button
+                    onClick={() => {
+                      setUseIframeFallback(true);
+                      setStreamLoadError('');
+                    }}
+                    className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold rounded-lg text-[11px] cursor-pointer"
+                  >
+                    Open Drive Embed
+                  </button>
+                )}
+                <button
+                  onClick={() => setStreamLoadError('')}
+                  className="text-white/60 hover:text-white text-xs px-1"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* FLOATING SOCIAL REACTIONS STAGE */}
           <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
@@ -1039,7 +1111,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                         userOptedLocalRef.current = false;
                         setHybridMode('cloud');
                         setVideoFile(null);
-                        setVideoUrl(room.streamUrl!);
+                        setVideoUrl(resolvePlayableStreamUrl(room.streamUrl!));
                       }
                     }}
                     className={`px-2.5 py-1.5 border rounded-xl flex items-center gap-1.5 backdrop-blur-md text-[10px] sm:text-xs font-semibold cursor-pointer transition-all ${
@@ -1060,6 +1132,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                         <span>☁️ Cloud Stream</span>
                       </>
                     )}
+                  </button>
+                )}
+                {getGoogleDriveId(room?.streamUrl || videoUrl) && (
+                  <button
+                    onClick={() => setUseIframeFallback(prev => !prev)}
+                    className="px-2.5 py-1.5 border border-amber-400/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded-xl flex items-center gap-1.5 backdrop-blur-md text-[10px] sm:text-xs font-semibold cursor-pointer transition-all"
+                    title="Switch between Sync Video Player and Google Drive Embed Player"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>{useIframeFallback ? 'Synced Player' : 'Drive Embed'}</span>
                   </button>
                 )}
                 <input 

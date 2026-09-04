@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useRef, useCallback } from 'react';
 import { doc, collection, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, cleanForFirestore } from '../firebase';
 import { MediaItem } from '../types';
 import confetti from 'canvas-confetti';
 import { uploadFileInChunks } from '../utils/chunkedUpload';
@@ -149,7 +149,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           updatedAt: serverTimestamp()
         };
 
-        await setDoc(itemDocRef, finalDocData, { merge: true });
+        await setDoc(itemDocRef, cleanForFirestore(finalDocData), { merge: true });
 
         // Update job to completed
         setJobs(prev =>
