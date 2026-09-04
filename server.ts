@@ -125,13 +125,20 @@ app.post('/api/archive/inspect', async (req: Request, res: Response) => {
       if (!f.name) return false;
       const lower = f.name.toLowerCase();
       const isVideoExt = lower.endsWith('.mp4') || lower.endsWith('.mkv') || lower.endsWith('.webm') || lower.endsWith('.m4v');
-      // Exclude internal IA files or torrents
-      const isInternal = lower.includes('_ia.mp4') || lower.endsWith('_thumb.jpg');
+      // Exclude internal IA preview thumbnails
+      const isInternal = lower.endsWith('_thumb.jpg');
       return isVideoExt && !isInternal;
     });
 
-    // Natural sort video files (Episode 1, Episode 2...)
-    videoFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    // Natural sort video files, prioritizing original uploaded master files over IA-transcoded derivatives
+    videoFiles.sort((a, b) => {
+      const aIsDeriv = a.name.toLowerCase().includes('.ia.mp4') || a.name.toLowerCase().includes('_ia.mp4') || a.source === 'derivative';
+      const bIsDeriv = b.name.toLowerCase().includes('.ia.mp4') || b.name.toLowerCase().includes('_ia.mp4') || b.source === 'derivative';
+      if (aIsDeriv !== bIsDeriv) {
+        return aIsDeriv ? 1 : -1; // Original upload first
+      }
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
 
     const serverPrefix = `https://archive.org/download/${identifier}/`;
 
@@ -143,7 +150,8 @@ app.post('/api/archive/inspect', async (req: Request, res: Response) => {
       downloadUrl: `${serverPrefix}${encodeURIComponent(f.name)}`,
       sizeBytes: f.size ? parseInt(f.size, 10) : undefined,
       duration: f.length ? parseFloat(f.length) : undefined,
-      format: f.format || 'MP4'
+      format: f.format || 'MP4',
+      isOriginal: f.source !== 'derivative' && !f.name.toLowerCase().includes('.ia.mp4')
     }));
 
     // Find thumbnail if available

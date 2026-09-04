@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   X, 
   Upload, 
@@ -26,7 +26,8 @@ import {
   FolderTree,
   RefreshCw,
   Info,
-  HardDrive
+  HardDrive,
+  ExternalLink
 } from 'lucide-react';
 import { UserProfile, MediaItem, MediaSeason, MediaEpisode } from '../types';
 import { db } from '../firebase';
@@ -149,6 +150,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   const [archiveUrlInput, setArchiveUrlInput] = useState<string>('');
   const [isInspectingArchive, setIsInspectingArchive] = useState<boolean>(false);
   const [archiveInspectResult, setArchiveInspectResult] = useState<any>(null);
+  const [previewPlayerOpen, setPreviewPlayerOpen] = useState<boolean>(false);
 
   // Method A (Single File Upload to Archive.org S3) State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -232,10 +234,11 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   if (!isOpen) return null;
 
   // Method B: Inspect Archive.org link
-  const handleInspectArchive = async () => {
-    if (!archiveUrlInput.trim()) {
+  const handleInspectArchive = async (overrideUrl?: string) => {
+    const rawTarget = (overrideUrl !== undefined ? overrideUrl : archiveUrlInput).trim();
+    if (!rawTarget) {
       setError('Please paste a valid Archive.org item URL or ID');
-      return;
+      return null;
     }
 
     setIsInspectingArchive(true);
@@ -245,7 +248,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       const res = await fetch('/api/archive/inspect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urlOrId: archiveUrlInput.trim() })
+        body: JSON.stringify({ urlOrId: rawTarget })
       });
 
       const data = await res.json();
@@ -261,16 +264,18 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
       if (!posterUrl && data.posterUrl) setPosterUrl(data.posterUrl);
       if (data.year) setReleaseYear(data.year);
 
-      // If movie and exactly 1 file:
-      if (mediaType === 'movie' && data.files.length > 0) {
-        setMovieStreamUrl(data.files[0].streamUrl);
-        if (data.files[0].duration) {
-          setMovieDuration(Math.round(data.files[0].duration / 60));
+      // If movie:
+      if (mediaType === 'movie' && data.files && data.files.length > 0) {
+        // Preferred stream: original file (not derivative / .ia.mp4)
+        const primaryFile = data.files.find((f: any) => f.isOriginal) || data.files[0];
+        setMovieStreamUrl(primaryFile.streamUrl);
+        if (primaryFile.duration) {
+          setMovieDuration(Math.round(primaryFile.duration / 60));
         }
       }
 
       // If series/anime: populate current season with the inspected files!
-      if (mediaType !== 'movie' && data.files.length > 0) {
+      if (mediaType !== 'movie' && data.files && data.files.length > 0) {
         const newEpisodes: MediaEpisode[] = data.files.map((f: any, idx: number) => ({
           episodeNumber: idx + 1,
           title: f.title || `Episode ${idx + 1}`,
@@ -292,13 +297,37 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
           return updated;
         });
       }
+
+      return data;
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Error inspecting Archive.org item');
+      return null;
     } finally {
       setIsInspectingArchive(false);
     }
   };
+
+  // Debounced auto-inspection when user types or pastes an Archive.org URL
+  useEffect(() => {
+    const raw = archiveUrlInput.trim();
+    if (!raw) return;
+
+    // Check if it contains archive.org or is an item slug
+    const looksLikeArchive = raw.includes('archive.org') || (raw.length >= 5 && !raw.includes(' ') && !raw.includes('http'));
+    if (!looksLikeArchive) return;
+
+    // Skip if already inspected this exact item
+    if (archiveInspectResult && (archiveInspectResult.identifier === raw || raw.includes(archiveInspectResult.identifier))) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      handleInspectArchive(raw);
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [archiveUrlInput, mediaType]);
 
   // Method A: Direct Upload to Archive.org S3
   const handleUploadFileToArchive = async () => {
@@ -691,6 +720,25 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
         return;
       }
 
+      // If no stream URL was manually linked yet, but user provided an Archive.org link: auto-inspect now!
+      if (!finalMovieStreamUrl && archiveUrlInput.trim()) {
+        setIsSaving(true);
+        setUploadProgressText('Linking Archive.org video stream...');
+        const inspectData = await handleInspectArchive(archiveUrlInput.trim());
+        if (inspectData && inspectData.files && inspectData.files.length > 0) {
+          const primaryFile = inspectData.files.find((f: any) => f.isOriginal) || inspectData.files[0];
+          finalMovieStreamUrl = primaryFile.streamUrl;
+          setMovieStreamUrl(finalMovieStreamUrl);
+          if (primaryFile.duration && !movieDuration) {
+            setMovieDuration(Math.round(primaryFile.duration / 60));
+          }
+        } else {
+          setIsSaving(false);
+          setError('Could not locate any video streams in the provided Archive.org link. Please verify the URL or ID.');
+          return;
+        }
+      }
+
       if (!finalMovieStreamUrl) {
         if (selectedFile) {
           handleStartBackgroundUpload();
@@ -703,16 +751,25 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
           }, 1000);
           return;
         } else {
-          setError('Please select a video file to upload, or provide a stream URL.');
+          setError('Please select a video file to upload, or provide an Archive.org link or stream URL.');
           return;
         }
       }
     }
 
     if (mediaType !== 'movie') {
-      const totalEps = seasons.reduce((acc, s) => acc + (s.episodes?.length || 0), 0);
+      let totalEps = seasons.reduce((acc, s) => acc + (s.episodes?.length || 0), 0);
+      if (totalEps === 0 && archiveUrlInput.trim()) {
+        setIsSaving(true);
+        setUploadProgressText('Importing episodes from Archive.org...');
+        const inspectData = await handleInspectArchive(archiveUrlInput.trim());
+        if (inspectData && inspectData.files && inspectData.files.length > 0) {
+          totalEps = inspectData.files.length;
+        }
+      }
       if (totalEps === 0) {
         setError('Please add at least one episode or import an episode list from Archive.org.');
+        setIsSaving(false);
         return;
       }
     }
@@ -1377,37 +1434,160 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 {/* Method B: Archive.org Link Import */}
                 {uploadMode === 'archive_import' && (
                   <div className="p-4 bg-sky-950/20 border border-sky-500/20 rounded-2xl space-y-3">
-                    <p className="text-xs text-slate-300">
-                      Paste an Archive.org item details link (e.g. <code className="text-sky-300 font-mono">https://archive.org/details/my_show</code>) or item ID. Penguin View will automatically inspect and import all videos!
-                    </p>
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs text-slate-200 font-medium">
+                          Archive.org Item Details Link or Identifier
+                        </p>
+                        <a 
+                          href="https://archive.org" 
+                          target="_blank" 
+                          rel="noreferrer" 
+                          className="text-[10px] text-sky-400 hover:text-sky-300 flex items-center gap-1"
+                        >
+                          <span>Browse Archive.org</span>
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Paste the details link (e.g. <code className="text-sky-300 font-mono">https://archive.org/details/supergirl-480-p</code>) or identifier. Penguin View inspects the files and links the video stream automatically!
+                      </p>
+                    </div>
 
                     <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="https://archive.org/details/identifier or identifier..."
-                        className="flex-grow px-3 py-2 text-xs text-slate-100 liquid-glass-input"
-                        value={archiveUrlInput}
-                        onChange={(e) => setArchiveUrlInput(e.target.value)}
-                      />
+                      <div className="relative flex-grow">
+                        <input
+                          type="text"
+                          placeholder="https://archive.org/details/supergirl-480-p or item-id..."
+                          className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input pr-8"
+                          value={archiveUrlInput}
+                          onChange={(e) => setArchiveUrlInput(e.target.value)}
+                        />
+                        {isInspectingArchive && (
+                          <div className="absolute right-2.5 top-1/2 -translate-y-1/2">
+                            <span className="animate-spin inline-block text-xs">⏳</span>
+                          </div>
+                        )}
+                      </div>
                       <button
                         type="button"
-                        onClick={handleInspectArchive}
-                        disabled={isInspectingArchive}
-                        className="px-4 py-2 bg-gradient-to-r from-sky-400 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        onClick={() => handleInspectArchive()}
+                        disabled={isInspectingArchive || !archiveUrlInput.trim()}
+                        className="px-4 py-2 bg-gradient-to-r from-sky-400 to-indigo-600 hover:from-sky-300 hover:to-indigo-500 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-all shadow-md shadow-sky-500/20 shrink-0"
                       >
                         {isInspectingArchive ? (
-                          <span className="animate-spin">⏳</span>
+                          <span className="animate-spin text-xs">⏳</span>
                         ) : (
                           <Search className="w-3.5 h-3.5" />
                         )}
-                        <span>Inspect & Auto-Fill</span>
+                        <span>{isInspectingArchive ? 'Inspecting...' : 'Inspect & Auto-Fill'}</span>
                       </button>
                     </div>
 
+                    {isInspectingArchive && (
+                      <div className="p-3 bg-sky-950/40 border border-sky-400/30 rounded-xl text-sky-300 text-xs flex items-center gap-2 animate-pulse">
+                        <span className="animate-spin text-sm">⏳</span>
+                        <span>Inspecting Archive.org metadata and searching for video files...</span>
+                      </div>
+                    )}
+
                     {archiveInspectResult && (
-                      <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center justify-between">
-                        <span>Found {archiveInspectResult.filesCount} video episodes! Automatically filled into {mediaType === 'movie' ? 'movie stream' : 'Season 1'}.</span>
-                        <CheckCircle2 className="w-4 h-4" />
+                      <div className="p-3.5 bg-emerald-950/30 border border-emerald-500/30 rounded-xl text-emerald-200 text-xs space-y-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5 font-semibold text-emerald-300">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                              <span>Found {archiveInspectResult.filesCount} video file{archiveInspectResult.filesCount === 1 ? '' : 's'} for "{archiveInspectResult.title}"</span>
+                            </div>
+                            <p className="text-[11px] text-slate-300">
+                              Identifier: <span className="font-mono text-emerald-300">{archiveInspectResult.identifier}</span>
+                            </p>
+                          </div>
+
+                          <a
+                            href={`https://archive.org/details/${archiveInspectResult.identifier}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] text-sky-400 hover:text-sky-300 flex items-center gap-1 shrink-0 bg-white/5 hover:bg-white/10 px-2 py-1 rounded-lg border border-white/10"
+                          >
+                            <span>Open on Archive</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+
+                        {/* If movie: Show stream file selection and preview */}
+                        {mediaType === 'movie' && archiveInspectResult.files && archiveInspectResult.files.length > 0 && (
+                          <div className="pt-2 border-t border-emerald-500/20 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-medium text-slate-200">
+                                Active Video Stream ({archiveInspectResult.files.length} available):
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setPreviewPlayerOpen(!previewPlayerOpen)}
+                                className="text-[11px] text-sky-300 hover:text-sky-200 flex items-center gap-1 cursor-pointer bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/20 px-2 py-0.5 rounded-md"
+                              >
+                                <Play className="w-3 h-3 text-sky-400" />
+                                <span>{previewPlayerOpen ? 'Hide Preview' : 'Test Playback'}</span>
+                              </button>
+                            </div>
+
+                            {/* Stream File Pills */}
+                            <div className="flex flex-wrap gap-1.5">
+                              {archiveInspectResult.files.map((file: any) => {
+                                const isSelected = movieStreamUrl === file.streamUrl;
+                                const sizeMb = file.sizeBytes ? (file.sizeBytes / (1024 * 1024)).toFixed(1) + ' MB' : '';
+                                return (
+                                  <button
+                                    key={file.name}
+                                    type="button"
+                                    onClick={() => {
+                                      setMovieStreamUrl(file.streamUrl);
+                                      if (file.duration) setMovieDuration(Math.round(file.duration / 60));
+                                    }}
+                                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-mono flex items-center gap-1.5 cursor-pointer transition-all border ${
+                                      isSelected
+                                        ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200 shadow-sm shadow-emerald-500/30'
+                                        : 'bg-white/5 border-white/10 text-slate-400 hover:text-slate-200 hover:bg-white/10'
+                                    }`}
+                                  >
+                                    <Film className="w-3 h-3 text-emerald-400 shrink-0" />
+                                    <span className="truncate max-w-[220px]">{file.name}</span>
+                                    {sizeMb && <span className="text-[10px] text-slate-400">({sizeMb})</span>}
+                                    {file.isOriginal && (
+                                      <span className="text-[9px] bg-sky-500/20 text-sky-300 px-1 py-0.2 rounded font-sans">
+                                        Original Master
+                                      </span>
+                                    )}
+                                    {isSelected && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {/* Optional In-Modal Test Preview */}
+                            {previewPlayerOpen && movieStreamUrl && (
+                              <div className="mt-2 rounded-xl overflow-hidden border border-emerald-400/30 bg-black/60 p-2">
+                                <p className="text-[10px] text-slate-400 mb-1 flex items-center justify-between">
+                                  <span>Testing stream:</span>
+                                  <span className="font-mono text-emerald-400 truncate max-w-[240px]">{movieStreamUrl}</span>
+                                </p>
+                                <video
+                                  src={movieStreamUrl}
+                                  controls
+                                  className="w-full max-h-56 rounded-lg bg-black"
+                                  preload="metadata"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {mediaType !== 'movie' && (
+                          <div className="pt-2 border-t border-emerald-500/20 text-[11px] text-emerald-300">
+                            ✓ {archiveInspectResult.filesCount} episodes populated into {seasons[activeSeasonIndex]?.seasonTitle || 'Season 1'}. You can review each episode below.
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1736,7 +1916,23 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                     movieStreamUrl ? (
                       <span className="text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Ready: {movieStreamUrl.startsWith('local://') ? `Local Movie (${movieStreamUrl.replace('local://', '')})` : 'Cloud Stream Link'}</span>
+                        <span>Ready: {
+                          movieStreamUrl.startsWith('local://') 
+                            ? `Local Movie (${movieStreamUrl.replace('local://', '')})` 
+                            : movieStreamUrl.includes('archive.org')
+                            ? `Archive.org Stream Linked (${decodeURIComponent(movieStreamUrl.split('/').pop() || 'Video')})`
+                            : 'Cloud Stream Link'
+                        }</span>
+                      </span>
+                    ) : isInspectingArchive ? (
+                      <span className="text-[11px] text-sky-300 bg-sky-500/10 border border-sky-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
+                        <span className="animate-spin text-xs">⏳</span>
+                        <span>Inspecting Archive.org stream...</span>
+                      </span>
+                    ) : archiveUrlInput.trim() ? (
+                      <span className="text-[11px] text-sky-300 bg-sky-500/10 border border-sky-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
+                        <Cloud className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Archive.org link ready (will auto-link on publish)</span>
                       </span>
                     ) : selectedFile ? (
                       <span className="text-[11px] text-sky-300 bg-sky-500/10 border border-sky-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 font-medium">
