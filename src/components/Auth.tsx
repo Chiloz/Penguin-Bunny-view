@@ -9,6 +9,7 @@ import { setDoc, doc, getDoc } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { LiquidGlassCard } from './LiquidGlassCard';
 import { Mail, Lock, User, Film, Eye } from 'lucide-react';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface AuthProps {
   onAuthSuccess: (uid: string) => void;
@@ -139,6 +140,11 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess, onDemoLogin }) => {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[85vh] p-4 font-sans relative">
+      {/* Top Header Controls */}
+      <div className="absolute top-4 right-4 z-20">
+        <PWAInstallButton />
+      </div>
+
       {/* Dynamic Background Gradients */}
       <div className="absolute top-1/4 left-1/4 w-80 h-80 bg-blue-500/10 rounded-full blur-[100px] pointer-events-none" />
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-[120px] pointer-events-none" />

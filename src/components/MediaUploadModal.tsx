@@ -36,6 +36,8 @@ import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/fi
 import { LiquidGlassCard } from './LiquidGlassCard';
 import { useUpload } from '../context/UploadContext';
 import { uploadFileInChunks } from '../utils/chunkedUpload';
+import { inspectArchiveItem, searchArchiveMovies, ArchiveInspectResult } from '../utils/archiveOrg';
+import { storeLocalVideo } from '../utils/localVideoStorage';
 
 // Fast client-side image compressor for instant poster art uploads from device
 const compressImageFile = (file: File, maxWidth = 800, maxHeight = 1200, quality = 0.85): Promise<string> => {
@@ -153,6 +155,26 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   const [archiveInspectResult, setArchiveInspectResult] = useState<any>(null);
   const [archiveSuggestions, setArchiveSuggestions] = useState<any[]>([]);
   const [previewPlayerOpen, setPreviewPlayerOpen] = useState<boolean>(false);
+
+  // Archive.org Direct Search State
+  const [archiveSearchQuery, setArchiveSearchQuery] = useState<string>('');
+  const [isSearchingArchive, setIsSearchingArchive] = useState<boolean>(false);
+  const [archiveSearchResults, setArchiveSearchResults] = useState<any[]>([]);
+
+  const handleArchiveSearch = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const q = archiveSearchQuery.trim();
+    if (!q) return;
+    setIsSearchingArchive(true);
+    try {
+      const results = await searchArchiveMovies(q);
+      setArchiveSearchResults(results);
+    } catch (err) {
+      console.error('Archive search failed:', err);
+    } finally {
+      setIsSearchingArchive(false);
+    }
+  };
 
   // Method A (Single File Upload to Archive.org S3) State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -280,18 +302,10 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     setArchiveSuggestions([]);
 
     try {
-      const res = await fetch('/api/archive/inspect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urlOrId: rawTarget })
-      });
+      const data = await inspectArchiveItem(rawTarget);
 
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.suggestions && data.suggestions.length > 0) {
-          setArchiveSuggestions(data.suggestions);
-        }
-        throw new Error(data.error || 'Failed to inspect Archive.org link');
+      if (!data) {
+        throw new Error('Failed to inspect Archive.org item');
       }
 
       setArchiveInspectResult(data);
@@ -860,7 +874,12 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
       if (mediaType === 'movie') {
         mediaPayload.streamUrl = finalMovieStreamUrl;
-        if (finalMovieStreamUrl.includes('drive.google.com') || finalMovieStreamUrl.includes('docs.google.com')) {
+        if (finalMovieStreamUrl.startsWith('local://')) {
+          mediaPayload.storageProvider = 'local';
+          if (selectedFile) {
+            await storeLocalVideo(selectedFile.name, selectedFile);
+          }
+        } else if (finalMovieStreamUrl.includes('drive.google.com') || finalMovieStreamUrl.includes('docs.google.com')) {
           mediaPayload.storageProvider = 'google_drive';
         } else if (finalMovieStreamUrl.includes('archive.org')) {
           mediaPayload.storageProvider = 'archive_org';
@@ -1468,36 +1487,67 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                                   setSelectedFile(f);
                                   if (!episodeTitle) setEpisodeTitle(f.name.replace(/\.[^/.]+$/, ''));
                                   if (!title) setTitle(f.name.replace(/\.[^/.]+$/, ''));
+                                  setMovieStreamUrl(`local://${f.name}`);
+                                  // Automatically store in IndexedDB for instant zero-wait local playback
+                                  storeLocalVideo(f.name, f).catch(() => {});
+                                  setUploadProgressText(`✓ Ready as Instant Local Movie (${f.name})! Click "Publish to Catalog" below to save.`);
                                 }
                               }}
                             />
                           </label>
+                        </div>
 
-                          {selectedFile && mediaType === 'movie' && (
+                        {selectedFile && mediaType === 'movie' && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
                             <button
                               type="button"
                               onClick={() => {
                                 setMovieStreamUrl(`local://${selectedFile.name}`);
-                                setUploadProgressText('✓ Linked as Local Movie! Click "Publish to Catalog" below to save.');
+                                storeLocalVideo(selectedFile.name, selectedFile).catch(() => {});
+                                setUploadProgressText(`✓ Configured for Instant Local Movie! Click "Publish to Catalog" below to save.`);
                               }}
-                              className="px-4 py-2.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-400/30 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
-                              title="Instant playback without uploading gigabytes of data"
+                              className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                                movieStreamUrl === `local://${selectedFile.name}`
+                                  ? 'bg-emerald-500/20 border-emerald-400/50 shadow-md shadow-emerald-500/10'
+                                  : 'bg-white/5 border-white/10 hover:bg-white/10'
+                              }`}
                             >
-                              <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                              <span>Instant Local Link</span>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
+                                  <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                                  Instant Local Movie
+                                </span>
+                                {movieStreamUrl === `local://${selectedFile.name}` && (
+                                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/30 px-2 py-0.5 rounded-full">
+                                    Selected ✓
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-300">
+                                0 MB data consumed. Plays instantly from this drive in full original resolution, perfectly synchronized with your watch room!
+                              </p>
                             </button>
-                          )}
 
-                          <button
-                            type="button"
-                            onClick={handleStartBackgroundUpload}
-                            disabled={!selectedFile}
-                            className="px-4 py-2.5 bg-gradient-to-r from-sky-400 to-indigo-600 hover:from-sky-300 hover:to-indigo-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition-all active:scale-95 shadow-lg shadow-sky-500/20"
-                          >
-                            <Cloud className="w-3.5 h-3.5 text-sky-200" />
-                            <span>Upload Movie (Live %)</span>
-                          </button>
-                        </div>
+                            <button
+                              type="button"
+                              onClick={handleStartBackgroundUpload}
+                              className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-left flex flex-col gap-1 transition-all cursor-pointer group"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
+                                  <Cloud className="w-3.5 h-3.5 text-sky-400" />
+                                  Cloud Server Upload
+                                </span>
+                                <span className="text-[10px] text-slate-400 group-hover:text-sky-300">
+                                  Live %
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400 group-hover:text-slate-300">
+                                Uploads to penguin view server so friends without the local file can stream from the cloud.
+                              </p>
+                            </button>
+                          </div>
+                        )}
 
                         {selectedFile && (
                           <div className="p-2.5 bg-sky-500/10 border border-sky-400/20 rounded-xl text-[11px] text-sky-200 flex items-start gap-2">
@@ -1521,11 +1571,13 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 {/* Method B: Archive.org Link Import */}
                 {uploadMode === 'archive_import' && (
                   <div className="p-4 bg-sky-950/20 border border-sky-500/20 rounded-2xl space-y-3">
-                    <div>
+                    {/* Direct Archive.org Movie Search */}
+                    <div className="p-3 bg-white/5 border border-white/10 rounded-xl space-y-2">
                       <div className="flex items-center justify-between">
-                        <p className="text-xs text-slate-200 font-medium">
-                          Archive.org Item Details Link or Identifier
-                        </p>
+                        <span className="text-[11px] font-bold text-sky-300 flex items-center gap-1.5">
+                          <Search className="w-3.5 h-3.5 text-sky-400" />
+                          <span>Search Archive.org Public Domain & Open Movies</span>
+                        </span>
                         <a 
                           href="https://archive.org" 
                           target="_blank" 
@@ -1536,27 +1588,97 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                           <ExternalLink className="w-2.5 h-2.5" />
                         </a>
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        Paste the details link (e.g.{' '}
+                      <form onSubmit={handleArchiveSearch} className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Search movies (e.g. Supergirl, Popeye, Sintel, Night of the Living Dead)..."
+                          value={archiveSearchQuery}
+                          onChange={(e) => setArchiveSearchQuery(e.target.value)}
+                          className="flex-1 px-3 py-1.5 text-xs text-slate-100 liquid-glass-input"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isSearchingArchive || !archiveSearchQuery.trim()}
+                          className="px-3 py-1.5 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-400/30 text-xs font-semibold rounded-lg flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
+                        >
+                          {isSearchingArchive ? 'Searching...' : 'Search'}
+                        </button>
+                      </form>
+
+                      {/* Search Results */}
+                      {archiveSearchResults.length > 0 && (
+                        <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                          {archiveSearchResults.map((res) => (
+                            <div
+                              key={res.identifier}
+                              className="p-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-bold text-white truncate">{res.title}</p>
+                                <p className="text-[10px] text-slate-400 font-mono">
+                                  {res.year ? `${res.year} • ` : ''}{res.downloads ? `${res.downloads} downloads • ` : ''}ID: {res.identifier}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setArchiveUrlInput(`https://archive.org/details/${res.identifier}`);
+                                  handleInspectArchive(res.identifier);
+                                }}
+                                className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/40 text-sky-300 border border-sky-400/30 text-[11px] font-bold rounded-lg shrink-0 cursor-pointer"
+                              >
+                                Select & Inspect
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <p className="text-xs text-slate-200 font-medium">
+                        Or Paste Archive.org Item Details Link / ID
+                      </p>
+                      <div className="flex flex-wrap items-center gap-1 text-[11px] text-slate-400 mt-1">
+                        <span>Quick picks:</span>
                         <button
                           type="button"
                           onClick={() => {
-                            setArchiveUrlInput('https://archive.org/details/supergirl-480-p');
-                            handleInspectArchive('https://archive.org/details/supergirl-480-p');
+                            setArchiveUrlInput('https://archive.org/details/Sintel');
+                            handleInspectArchive('Sintel');
                           }}
-                          className="text-sky-300 font-mono underline hover:text-sky-200 cursor-pointer"
+                          className="text-sky-300 hover:text-white px-2 py-0.5 rounded bg-sky-500/10 border border-sky-400/20 cursor-pointer text-[10px]"
                         >
-                          https://archive.org/details/supergirl-480-p
+                          Sintel (1080p Open Movie)
                         </button>
-                        ) or identifier. Penguin View inspects the files and links the video stream automatically!
-                      </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setArchiveUrlInput('https://archive.org/details/supergirl-1984');
+                            handleInspectArchive('supergirl-1984');
+                          }}
+                          className="text-indigo-300 hover:text-white px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-400/20 cursor-pointer text-[10px]"
+                        >
+                          Supergirl (1984)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setArchiveUrlInput('https://archive.org/details/ElephantsDream');
+                            handleInspectArchive('ElephantsDream');
+                          }}
+                          className="text-teal-300 hover:text-white px-2 py-0.5 rounded bg-teal-500/10 border border-teal-400/20 cursor-pointer text-[10px]"
+                        >
+                          Elephants Dream
+                        </button>
+                      </div>
                     </div>
 
                     <div className="flex gap-2">
                       <div className="relative flex-grow">
                         <input
                           type="text"
-                          placeholder="https://archive.org/details/supergirl-480-p or item-id..."
+                          placeholder="https://archive.org/details/supergirl-1984 or item-id..."
                           className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input pr-14"
                           value={archiveUrlInput}
                           onChange={(e) => setArchiveUrlInput(e.target.value)}
@@ -1732,6 +1854,45 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                         {mediaType !== 'movie' && (
                           <div className="pt-2 border-t border-emerald-500/20 text-[11px] text-emerald-300">
                             ✓ {archiveInspectResult.filesCount} episodes populated into {seasons[activeSeasonIndex]?.seasonTitle || 'Season 1'}. You can review each episode below.
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {archiveInspectResult && archiveInspectResult.filesCount === 0 && (
+                      <div className="p-3.5 bg-amber-950/40 border border-amber-500/30 rounded-xl text-amber-200 text-xs space-y-2">
+                        <div className="flex items-center gap-1.5 font-semibold text-amber-300">
+                          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>No playable video files found in "{archiveInspectResult.identifier}"</span>
+                        </div>
+                        <p className="text-[11px] text-amber-200/80">
+                          {archiveInspectResult.isDark 
+                            ? 'This item was restricted or made private by Archive.org.'
+                            : 'This Archive item does not contain direct MP4/video files.'}
+                        </p>
+                        {archiveInspectResult.alternativeCandidates && archiveInspectResult.alternativeCandidates.length > 0 && (
+                          <div className="pt-2 border-t border-amber-500/20 space-y-1.5">
+                            <span className="text-[11px] font-semibold text-amber-300 flex items-center gap-1">
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>Working public alternatives on Archive.org (click to inspect):</span>
+                            </span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {archiveInspectResult.alternativeCandidates.map((c: any) => (
+                                <button
+                                  key={c.identifier}
+                                  type="button"
+                                  onClick={() => {
+                                    setArchiveUrlInput(`https://archive.org/details/${c.identifier}`);
+                                    handleInspectArchive(c.identifier);
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-400/20 text-[11px] text-amber-200 hover:text-white cursor-pointer flex items-center gap-1.5"
+                                >
+                                  <Film className="w-3 h-3 text-amber-400 shrink-0" />
+                                  <span className="truncate max-w-[200px]">{c.title || c.identifier}</span>
+                                  <span className="text-[10px] text-amber-400/80 font-mono">({c.identifier})</span>
+                                </button>
+                              ))}
+                            </div>
                           </div>
                         )}
                       </div>

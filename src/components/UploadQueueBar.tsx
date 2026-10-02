@@ -11,7 +11,8 @@ import {
   Film, 
   Trash2,
   Play,
-  RotateCcw
+  RotateCcw,
+  HardDrive
 } from 'lucide-react';
 
 export const UploadQueueBar: React.FC = () => {
@@ -22,7 +23,8 @@ export const UploadQueueBar: React.FC = () => {
     setIsDrawerOpen, 
     cancelUpload, 
     clearCompleted,
-    retryUpload
+    retryUpload,
+    convertToLocalJob
   } = useUpload();
 
   if (jobs.length === 0) {
@@ -246,9 +248,21 @@ export const UploadQueueBar: React.FC = () => {
                   </div>
 
                   {job.error && (
-                    <p className="text-[11px] text-rose-300 bg-rose-950/40 p-2 rounded-xl border border-rose-500/20">
-                      {job.error}
-                    </p>
+                    <div className="space-y-2 mt-1">
+                      <p className="text-[11px] text-rose-300 bg-rose-950/40 p-2 rounded-xl border border-rose-500/20">
+                        {job.error}
+                      </p>
+                      {job.file && (
+                        <button
+                          type="button"
+                          onClick={() => convertToLocalJob(job.id)}
+                          className="w-full py-2 px-3 bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:from-emerald-500/30 hover:to-teal-500/30 text-emerald-300 border border-emerald-400/30 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95 shadow-md shadow-emerald-500/10"
+                        >
+                          <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Switch to Instant Local Movie (Play Now)</span>
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               );

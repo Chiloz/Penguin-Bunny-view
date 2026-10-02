@@ -1,18 +1,28 @@
 // Service Worker for Penguin View PWA
-const CACHE_NAME = 'penguin-view-cache-v2';
+const CACHE_NAME = 'penguin-view-cache-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/pwa-192x192.png',
+  '/pwa-512x512.png',
+  '/pwa-maskable-512x512.png',
+  '/apple-touch-icon.png',
+  '/favicon-32x32.png',
+  '/favicon-16x16.png',
   '/penguin_logo.jpg'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS).catch((err) => {
-        console.warn('PWA cache addAll error:', err);
-      });
+    caches.open(CACHE_NAME).then(async (cache) => {
+      for (const asset of STATIC_ASSETS) {
+        try {
+          await cache.add(asset);
+        } catch (err) {
+          console.warn(`PWA pre-cache skipped for ${asset}:`, err);
+        }
+      }
     })
   );
   self.skipWaiting();

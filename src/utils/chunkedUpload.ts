@@ -164,13 +164,17 @@ export async function uploadFileInChunks(options: ChunkUploadOptions): Promise<C
             const rawText = xhr.responseText || '';
             const isHtml = rawText.trim().startsWith('<') || rawText.includes('<!DOCTYPE') || rawText.includes('<html>');
 
-            // If an auth redirect occurred or proxy HTML was returned (e.g. during server restart or cloud proxy reload)
+            // If an auth redirect occurred or proxy HTML was returned (e.g. static hosting rewrite or cloud proxy reload)
             if (isHtml) {
-              reject(new Error(
-                xhr.status === 413
-                  ? 'Chunk size exceeded proxy limits.'
-                  : `Server connection restarting or proxy reload (${xhr.status}).`
-              ));
+              if (xhr.status === 200) {
+                reject(new Error(
+                  'Static web host detected (e.g. Firebase Hosting). Server video uploads require a backend server. Switch this video to Instant Local Movie, Google Drive, or Archive.org.'
+                ));
+              } else if (xhr.status === 413) {
+                reject(new Error('Chunk size exceeded proxy limits.'));
+              } else {
+                reject(new Error(`Server connection restarting or proxy reload (${xhr.status}).`));
+              }
               return;
             }
 

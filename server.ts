@@ -31,6 +31,21 @@ const ARCHIVE_SECRET_KEY = process.env.ARCHIVE_S3_SECRET_KEY || 's0pBbUEfuqXG1cr
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Serve static assets from public with proper PWA and Service Worker headers
+const PUBLIC_DIR = path.join(process.cwd(), 'public');
+app.use(express.static(PUBLIC_DIR, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('manifest.json')) {
+      res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+    } else if (filePath.endsWith('sw.js')) {
+      res.setHeader('Service-Worker-Allowed', '/');
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  }
+}));
+
 // Setup multer disk storage for high performance streaming video uploads
 const diskStorage = multer.diskStorage({
   destination: (req, file, cb) => {

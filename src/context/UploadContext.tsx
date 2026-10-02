@@ -4,6 +4,7 @@ import { db, cleanForFirestore } from '../firebase';
 import { MediaItem } from '../types';
 import confetti from 'canvas-confetti';
 import { uploadFileInChunks } from '../utils/chunkedUpload';
+import { storeLocalVideo } from '../utils/localVideoStorage';
 
 export interface UploadJob {
   id: string;
@@ -29,6 +30,7 @@ interface UploadContextType {
   setIsDrawerOpen: (open: boolean) => void;
   startUpload: (file: File, mediaPayload: Partial<MediaItem>) => string;
   retryUpload: (jobId: string) => void;
+  convertToLocalJob: (jobId: string) => Promise<void>;
   cancelUpload: (jobId: string) => void;
   clearCompleted: () => void;
   getJobForTitle: (title: string) => UploadJob | undefined;
@@ -219,6 +221,66 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     runUpload(job.file, job.mediaItemPayload, jobId);
   }, [jobs, runUpload]);
 
+  const convertToLocalJob = useCallback(async (jobId: string) => {
+    const job = jobs.find(j => j.id === jobId);
+    if (!job) return;
+
+    try {
+      if (job.file) {
+        await storeLocalVideo(job.fileName, job.file);
+      }
+
+      const localStreamUrl = `local://${job.fileName}`;
+      const itemDocRef = job.mediaItemPayload.id
+        ? doc(db, 'media_items', job.mediaItemPayload.id)
+        : doc(collection(db, 'media_items'));
+
+      const finalDocData = {
+        ...job.mediaItemPayload,
+        id: itemDocRef.id,
+        title: job.title,
+        type: job.mediaItemPayload.type || 'movie',
+        streamUrl: localStreamUrl,
+        storageProvider: 'local',
+        createdAt: job.mediaItemPayload.createdAt || serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      await setDoc(itemDocRef, cleanForFirestore(finalDocData), { merge: true });
+
+      setJobs(prev =>
+        prev.map(j =>
+          j.id === jobId
+            ? {
+                ...j,
+                status: 'completed',
+                progress: 100,
+                streamUrl: localStreamUrl,
+                error: undefined
+              }
+            : j
+        )
+      );
+
+      try {
+        confetti({ particleCount: 60, spread: 50, origin: { y: 0.8 } });
+      } catch {}
+
+      window.dispatchEvent(
+        new CustomEvent('penguin-in-app-notification', {
+          detail: {
+            title: '🎬 Instant Local Movie Published!',
+            body: `"${job.title}" is ready in your catalog for synchronized watch parties!`,
+            icon: '🐧',
+            tag: 'Media Catalog'
+          }
+        })
+      );
+    } catch (err: any) {
+      console.error('Failed to convert to local movie:', err);
+    }
+  }, [jobs]);
+
   return (
     <UploadContext.Provider
       value={{
@@ -228,6 +290,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setIsDrawerOpen,
         startUpload,
         retryUpload,
+        convertToLocalJob,
         cancelUpload,
         clearCompleted,
         getJobForTitle

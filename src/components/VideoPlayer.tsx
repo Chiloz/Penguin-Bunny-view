@@ -43,6 +43,7 @@ import {
   Tv,
   ScreenShare
 } from 'lucide-react';
+import { getLocalVideo, storeLocalVideo } from '../utils/localVideoStorage';
 
 interface VideoPlayerProps {
   roomId: string;
@@ -346,6 +347,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           setHybridMode('cloud');
         } else {
           setHybridMode('local');
+          const localName = roomData.streamUrl.replace('local://', '');
+          getLocalVideo(localName).then(cachedBlob => {
+            if (cachedBlob && !userOptedLocalRef.current) {
+              const fileObj = new File([cachedBlob], localName, { type: cachedBlob.type || 'video/mp4' });
+              processSelectedFiles([fileObj]);
+            }
+          }).catch(() => {});
         }
       }
 
@@ -482,6 +490,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     });
 
     if (videoFiles.length === 0) return;
+
+    // Cache the primary file in IndexedDB for seamless reload
+    try {
+      storeLocalVideo(videoFiles[0].name, videoFiles[0]).catch(() => {});
+    } catch {}
 
     // Natural alphanumeric sorting (Episode 1, Episode 2, Episode 10...)
     videoFiles.sort((a, b) => a.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' }));

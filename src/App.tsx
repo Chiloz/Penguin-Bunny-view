@@ -13,6 +13,7 @@ import { PullToRefresh } from './components/PullToRefresh';
 import { WelcomePopup } from './components/WelcomePopup';
 import { UploadProvider } from './context/UploadContext';
 import { UploadQueueBar } from './components/UploadQueueBar';
+import { PWAInstallButton } from './components/PWAInstallButton';
 import { Film } from 'lucide-react';
 
 export default function App() {
@@ -284,6 +285,7 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2">
+                <PWAInstallButton />
                 <button 
                   onClick={() => setIsWelcomeOpen(true)}
                   className="text-xs text-slate-300 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-400/40 px-3 py-1.5 rounded-full flex items-center gap-2 backdrop-blur-md cursor-pointer transition-all hover:scale-105"

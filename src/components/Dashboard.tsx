@@ -488,9 +488,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <button
               onClick={() => setIsInstallModalOpen(true)}
               className="px-3.5 py-2 text-xs font-bold text-sky-200 hover:text-white bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 border border-sky-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-sky-500/10 hover:scale-105 active:scale-95"
-              title="Install Penguin View on Phone screen, Windows taskbar, or Mac dock"
+              title="Install Penguin View on Microsoft Edge, Linux Desktop, Windows, Mac, or Mobile"
             >
-              <Smartphone className="w-3.5 h-3.5 text-sky-400" />
+              <Download className="w-3.5 h-3.5 text-sky-400" />
               <span>Install App</span>
             </button>
 
