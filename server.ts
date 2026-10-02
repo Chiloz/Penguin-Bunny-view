@@ -432,7 +432,9 @@ app.get('/api/drive/stream', async (req: Request, res: Response) => {
     }
 
     res.status(driveRes.status);
-    ['content-range', 'accept-ranges', 'content-length', 'content-type'].forEach(header => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Accept-Ranges', 'bytes');
+    ['content-range', 'content-length', 'content-type'].forEach(header => {
       const val = driveRes.headers.get(header);
       if (val) res.setHeader(header, val);
     });

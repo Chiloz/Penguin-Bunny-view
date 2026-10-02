@@ -41,9 +41,17 @@ import {
   AlertTriangle,
   ExternalLink,
   Tv,
-  ScreenShare
+  ScreenShare,
+  FolderOpen
 } from 'lucide-react';
 import { getLocalVideo, storeLocalVideo } from '../utils/localVideoStorage';
+
+export function formatSeconds(time: number): string {
+  if (isNaN(time) || time < 0) return '0:00';
+  const mins = Math.floor(time / 60);
+  const secs = Math.floor(time % 60);
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
 
 interface VideoPlayerProps {
   roomId: string;
@@ -88,6 +96,10 @@ export function getGoogleDriveId(rawUrl: string): string | null {
     const match = rawUrl.match(/(?:file\/d\/|id=)([a-zA-Z0-9_-]{20,})/);
     return match ? match[1] : null;
   }
+  if (rawUrl.includes('/api/drive/stream')) {
+    const match = rawUrl.match(/id=([a-zA-Z0-9_-]{20,})/);
+    return match ? match[1] : null;
+  }
   return null;
 }
 
@@ -112,6 +124,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [useIframeFallback, setUseIframeFallback] = useState<boolean>(false);
   const [streamLoadError, setStreamLoadError] = useState<string>('');
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const [lastKnownTime, setLastKnownTime] = useState<number>(0);
 
   // Sync Room state
   const [room, setRoom] = useState<Room | null>(null);
@@ -545,6 +559,46 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     if (e.target.files && e.target.files.length > 0) {
       processSelectedFiles(e.target.files);
     }
+  };
+
+  // Reconnect and resume stream with cache-busting and automatic seek to last known position
+  const handleReconnectStream = () => {
+    setIsReconnecting(true);
+    setStreamLoadError('');
+    const timeToResume = lastKnownTime > 0 ? lastKnownTime : currentTime;
+
+    const baseStreamUrl = room?.streamUrl ? resolvePlayableStreamUrl(room.streamUrl) : videoUrl;
+    if (!baseStreamUrl) {
+      setIsReconnecting(false);
+      return;
+    }
+
+    const cleanBase = baseStreamUrl.replace(/([?&])_recon=[^&]+/g, '');
+    const separator = cleanBase.includes('?') ? '&' : '?';
+    const freshUrl = `${cleanBase}${separator}_recon=${Date.now()}`;
+
+    setVideoUrl(freshUrl);
+
+    setTimeout(() => {
+      const video = videoRef.current;
+      if (video) {
+        video.load();
+        const onLoaded = () => {
+          if (video && timeToResume > 0) {
+            video.currentTime = timeToResume;
+            setCurrentTime(timeToResume);
+            if (room?.isPlaying) {
+              video.play().catch(() => {});
+            }
+          }
+          setIsReconnecting(false);
+          video.removeEventListener('loadedmetadata', onLoaded);
+        };
+        video.addEventListener('loadedmetadata', onLoaded);
+      } else {
+        setIsReconnecting(false);
+      }
+    }, 250);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -1007,6 +1061,15 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 className="w-full h-full border-0"
                 allow="autoplay; fullscreen"
               />
+              <div className="absolute top-4 right-4 z-30 flex items-center gap-2">
+                <button
+                  onClick={() => setUseIframeFallback(false)}
+                  className="px-3 py-1.5 bg-black/70 hover:bg-black text-white text-xs font-semibold rounded-xl border border-white/20 backdrop-blur-md cursor-pointer transition-all shadow-lg flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Return to Sync Player</span>
+                </button>
+              </div>
             </div>
           ) : (
             <video
@@ -1020,42 +1083,114 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               onEnded={handleNextEpisode}
               onClick={togglePlayPause}
               onError={() => {
+                const videoEl = videoRef.current;
+                const currentPos = videoEl?.currentTime || currentTime;
+                if (currentPos > 0) {
+                  setLastKnownTime(currentPos);
+                }
+
                 const driveId = getGoogleDriveId(room?.streamUrl || videoUrl);
-                if (driveId) {
-                  setStreamLoadError('Google Drive direct streaming could not load. Make sure the file sharing is "Anyone with link can view", or use the Drive Embed player.');
+                const mediaErr = videoEl?.error;
+
+                if (mediaErr?.code === 3) {
+                  setStreamLoadError(`Video decoding error at ${formatSeconds(currentPos)}. The file has a corrupted frame, bad packet, or codec glitch at this exact timestamp. Click "Skip +10s" to jump past the bad frame.`);
+                } else if (driveId) {
+                  setStreamLoadError(`Google Drive stream session timed out or reached download quota at ${formatSeconds(currentPos)}. Google limits simultaneous downloads and temporary session tokens (~60-75 min). Click "Reconnect & Resume" or "Switch to Drive Embed Player" to continue.`);
+                } else if (mediaErr?.code === 2) {
+                  setStreamLoadError(`Stream network connection interrupted at ${formatSeconds(currentPos)}. The host server dropped or timed out the connection.`);
+                } else if (mediaErr?.code === 4) {
+                  setStreamLoadError(`Video stream rejected or rate-limited by provider at ${formatSeconds(currentPos)}.`);
                 } else {
-                  setStreamLoadError('Error loading video stream from source.');
+                  setStreamLoadError(`Stream connection lost at ${formatSeconds(currentPos)}.`);
                 }
               }}
               playsInline
             />
           )}
 
-          {/* Stream Load Error Notice Banner */}
+          {/* Stream Load Error Notice Banner with Instant Recovery */}
           {streamLoadError && (
-            <div className="absolute top-4 left-4 right-4 z-50 p-3 bg-red-950/90 border border-red-500/40 rounded-xl text-red-200 text-xs flex items-center justify-between gap-3 shadow-2xl backdrop-blur-md">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-                <span>{streamLoadError}</span>
+            <div className="absolute top-4 left-4 right-4 z-50 p-4 bg-red-950/95 border border-red-500/50 rounded-2xl text-red-100 text-xs shadow-2xl backdrop-blur-xl animate-in fade-in duration-200 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-white text-sm">
+                      Stream Interrupted at {formatSeconds(lastKnownTime || currentTime)}
+                    </p>
+                    <p className="text-red-300 text-xs leading-relaxed max-w-2xl">
+                      {streamLoadError}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setStreamLoadError('')}
+                  className="p-1 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-xs cursor-pointer"
+                >
+                  ✕
+                </button>
               </div>
-              <div className="flex items-center gap-2">
+
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-red-500/20">
+                {/* 1. Reconnect & Resume Button */}
+                <button
+                  onClick={handleReconnectStream}
+                  disabled={isReconnecting}
+                  className="px-3.5 py-1.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-sky-500/20 cursor-pointer transition-all active:scale-95"
+                >
+                  {isReconnecting ? (
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  )}
+                  <span>Reconnect & Resume at {formatSeconds(lastKnownTime || currentTime)}</span>
+                </button>
+
+                {/* 2. Skip Ahead 10s (Bypasses Corrupted Frame or Bad Keyframe) */}
+                <button
+                  onClick={() => {
+                    const skipTarget = (lastKnownTime || currentTime) + 10;
+                    setStreamLoadError('');
+                    const video = videoRef.current;
+                    if (video) {
+                      video.currentTime = skipTarget;
+                      setCurrentTime(skipTarget);
+                      video.play().catch(() => {});
+                    }
+                  }}
+                  className="px-3.5 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-purple-200 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                  title="Skips 10 seconds past a corrupted video packet, decode freeze, or bad keyframe"
+                >
+                  <SkipForward className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Skip +10s Past Bad Frame</span>
+                </button>
+
+                {/* 2. Google Drive Embed Player (bypasses Google download quota) */}
                 {getGoogleDriveId(room?.streamUrl || videoUrl) && (
                   <button
                     onClick={() => {
                       setUseIframeFallback(true);
                       setStreamLoadError('');
                     }}
-                    className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold rounded-lg text-[11px] cursor-pointer"
+                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all active:scale-95"
+                    title="Bypasses Google Drive download bandwidth limits using Google's native player"
                   >
-                    Open Drive Embed
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Switch to Drive Embed Player (Bypasses Quotas)</span>
                   </button>
                 )}
-                <button
-                  onClick={() => setStreamLoadError('')}
-                  className="text-white/60 hover:text-white text-xs px-1"
-                >
-                  ✕
-                </button>
+
+                {/* 3. Switch to Instant Local File */}
+                <label className="px-3.5 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95">
+                  <FolderOpen className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Sync with Local File (Zero Buffering)</span>
+                  <input
+                    type="file"
+                    accept="video/*,.mkv,.mp4,.avi,.mov,.webm"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                </label>
               </div>
             </div>
           )}
