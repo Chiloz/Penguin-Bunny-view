@@ -1093,7 +1093,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 const mediaErr = videoEl?.error;
 
                 if (mediaErr?.code === 3) {
-                  setStreamLoadError(`Video decoding error at ${formatSeconds(currentPos)}. The file has a corrupted frame, bad packet, or codec glitch at this exact timestamp. Click "Skip +10s" to jump past the bad frame.`);
+                  // If Archive.org video and not already using .ia.mp4, automatically switch to web-compatible .ia.mp4
+                  if (videoUrl.includes('archive.org') && !videoUrl.includes('.ia.mp4')) {
+                    const iaUrl = videoUrl.replace(/\.mp4(\?.*)?$/i, '.ia.mp4$1');
+                    setVideoUrl(iaUrl);
+                    setStreamLoadError('Original video used HEVC (H.265) which web browsers cannot decode. Automatically switching to Archive.org H.264 stream (.ia.mp4)...');
+                    setTimeout(() => {
+                      setStreamLoadError('');
+                      if (videoRef.current) {
+                        videoRef.current.load();
+                        videoRef.current.play().catch(() => {});
+                      }
+                    }, 1000);
+                    return;
+                  }
+                  setStreamLoadError(`Video decoding error at ${formatSeconds(currentPos)}. The file codec is unsupported or has a bad keyframe. Click "Switch to H.264 Web Stream" or "Skip +10s".`);
                 } else if (driveId) {
                   setStreamLoadError(`Google Drive stream session timed out or reached download quota at ${formatSeconds(currentPos)}. Google limits simultaneous downloads and temporary session tokens (~60-75 min). Click "Reconnect & Resume" or "Switch to Drive Embed Player" to continue.`);
                 } else if (mediaErr?.code === 2) {
@@ -1164,6 +1178,31 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   <SkipForward className="w-3.5 h-3.5 text-purple-400" />
                   <span>Skip +10s Past Bad Frame</span>
                 </button>
+
+                {/* Switch between H.264 IA and Original for Archive.org streams */}
+                {(videoUrl.includes('archive.org') || (room?.streamUrl && room.streamUrl.includes('archive.org'))) && (
+                  <button
+                    onClick={() => {
+                      const active = videoUrl || room?.streamUrl || '';
+                      const targetUrl = active.includes('.ia.mp4')
+                        ? active.replace(/\.ia\.mp4/i, '.mp4')
+                        : active.replace(/\.mp4/i, '.ia.mp4');
+                      setStreamLoadError('');
+                      setVideoUrl(targetUrl);
+                      setTimeout(() => {
+                        if (videoRef.current) {
+                          videoRef.current.load();
+                          videoRef.current.play().catch(() => {});
+                        }
+                      }, 300);
+                    }}
+                    className="px-3.5 py-1.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all active:scale-95"
+                    title="Switches to the universal H.264 web stream (.ia.mp4)"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Switch to {videoUrl.includes('.ia.mp4') ? 'Original (.mp4)' : 'H.264 Web Stream (.ia.mp4)'}</span>
+                  </button>
+                )}
 
                 {/* 2. Google Drive Embed Player (bypasses Google download quota) */}
                 {getGoogleDriveId(room?.streamUrl || videoUrl) && (

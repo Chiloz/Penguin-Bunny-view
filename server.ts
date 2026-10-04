@@ -268,20 +268,19 @@ const handleArchiveInspect = async (req: Request, res: Response) => {
     const metadata = data?.metadata || {};
 
     // Sort video files:
-    // If user provided a specific filename, put it first.
-    // Otherwise prioritize original uploaded master files over IA-transcoded derivatives,
-    // and prefer standard .mp4 over other formats for maximum browser compatibility.
+    // Prioritize web-compatible H.264 IA (.ia.mp4) first to avoid browser decode errors with HEVC/H.265
     videoFiles.sort((a, b) => {
       if (preferredFilename) {
         if (a.name === preferredFilename) return -1;
         if (b.name === preferredFilename) return 1;
       }
 
-      const aIsDeriv = a.name.toLowerCase().includes('.ia.mp4') || a.name.toLowerCase().includes('_ia.mp4') || a.source === 'derivative';
-      const bIsDeriv = b.name.toLowerCase().includes('.ia.mp4') || b.name.toLowerCase().includes('_ia.mp4') || b.source === 'derivative';
-      if (aIsDeriv !== bIsDeriv) {
-        return aIsDeriv ? 1 : -1; // Original upload first
-      }
+      const aFormat = (a.format || '').toLowerCase();
+      const bFormat = (b.format || '').toLowerCase();
+      const aIsH264IA = aFormat.includes('h.264') || a.name.toLowerCase().endsWith('.ia.mp4');
+      const bIsH264IA = bFormat.includes('h.264') || b.name.toLowerCase().endsWith('.ia.mp4');
+      if (aIsH264IA && !bIsH264IA) return -1;
+      if (!aIsH264IA && bIsH264IA) return 1;
 
       const aIsMp4 = a.name.toLowerCase().endsWith('.mp4');
       const bIsMp4 = b.name.toLowerCase().endsWith('.mp4');

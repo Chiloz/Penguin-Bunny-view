@@ -195,22 +195,30 @@ export async function inspectArchiveItem(urlOrId: string): Promise<ArchiveInspec
 
   // Sort video files:
   // 1. Preferred filename if specified
-  // 2. Original master file before derivative
-  // 3. .mp4 first for universal browser compatibility
+  // 2. Web-compatible H.264 IA (.ia.mp4) first to avoid browser decode errors with HEVC/H.265
+  // 3. Universal .mp4 files
   videoFiles.sort((a, b) => {
     if (preferredFilename) {
       if (a.name === preferredFilename) return -1;
       if (b.name === preferredFilename) return 1;
     }
-    const aIsOriginal = a.source === 'original';
-    const bIsOriginal = b.source === 'original';
-    if (aIsOriginal && !bIsOriginal) return -1;
-    if (!aIsOriginal && bIsOriginal) return 1;
+
+    const aFormat = (a.format || '').toLowerCase();
+    const bFormat = (b.format || '').toLowerCase();
+    const aIsH264IA = aFormat.includes('h.264') || a.name.toLowerCase().endsWith('.ia.mp4');
+    const bIsH264IA = bFormat.includes('h.264') || b.name.toLowerCase().endsWith('.ia.mp4');
+    if (aIsH264IA && !bIsH264IA) return -1;
+    if (!aIsH264IA && bIsH264IA) return 1;
 
     const aIsMp4 = a.name.toLowerCase().endsWith('.mp4');
     const bIsMp4 = b.name.toLowerCase().endsWith('.mp4');
     if (aIsMp4 && !bIsMp4) return -1;
     if (!aIsMp4 && bIsMp4) return 1;
+
+    const aIsOriginal = a.source === 'original';
+    const bIsOriginal = b.source === 'original';
+    if (aIsOriginal && !bIsOriginal) return -1;
+    if (!aIsOriginal && bIsOriginal) return 1;
 
     return (b.size || 0) - (a.size || 0);
   });
