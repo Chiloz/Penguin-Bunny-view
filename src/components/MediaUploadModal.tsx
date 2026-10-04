@@ -28,11 +28,14 @@ import {
   Info,
   HardDrive,
   ExternalLink,
-  Sparkles
+  Sparkles,
+  ShieldCheck,
+  Lock
 } from 'lucide-react';
 import { UserProfile, MediaItem, MediaSeason, MediaEpisode } from '../types';
-import { db, cleanForFirestore } from '../firebase';
+import { db, storage, cleanForFirestore } from '../firebase';
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { LiquidGlassCard } from './LiquidGlassCard';
 import { useUpload } from '../context/UploadContext';
 import { uploadFileInChunks } from '../utils/chunkedUpload';
@@ -105,8 +108,41 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   existingMediaItem,
   onSuccess
 }) => {
-  // Mode: 'archive_import' (Method B) vs 'direct_upload' (Method A) vs 'direct_url' (Method C)
-  const [uploadMode, setUploadMode] = useState<'archive_import' | 'direct_upload' | 'direct_url'>('archive_import');
+  // Check if current user is permitted to upload directly to Firebase Cloud Storage
+  const isAllowedToUploadToFirebase = Boolean(
+    currentUser?.role === 'master_admin' ||
+    currentUser?.role === 'uploader' ||
+    currentUser?.email?.toLowerCase() === 'josaphatkychiloz@gmail.com'
+  );
+
+  // Mode: 'archive_import' (Default: open to all) vs 'firebase_storage' (Allowed uploaders only) vs 'direct_url'
+  const [uploadMode, setUploadMode] = useState<'archive_import' | 'firebase_storage' | 'direct_url'>('archive_import');
+
+  // Firebase Storage Upload State
+  const [isUploadingFirebase, setIsUploadingFirebase] = useState<boolean>(false);
+  const [firebaseProgress, setFirebaseProgress] = useState<number>(0);
+  const [firebaseStatusText, setFirebaseStatusText] = useState<string>('');
+
+  // Josaphat Archive Collection Items State
+  const [myArchiveItems, setMyArchiveItems] = useState<any[]>([]);
+  const [isLoadingMyArchive, setIsLoadingMyArchive] = useState<boolean>(false);
+  const [showMyArchiveList, setShowMyArchiveList] = useState<boolean>(false);
+
+  const fetchMyArchiveItems = async () => {
+    setIsLoadingMyArchive(true);
+    setShowMyArchiveList(true);
+    try {
+      const res = await fetch('/api/archive/my-items');
+      if (res.ok) {
+        const data = await res.json();
+        setMyArchiveItems(data.items || []);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch user archive items:', err);
+    } finally {
+      setIsLoadingMyArchive(false);
+    }
+  };
   
   // Basic metadata
   const [mediaType, setMediaType] = useState<'movie' | 'series' | 'anime'>(
@@ -210,6 +246,60 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     ].filter(Boolean);
     return candidateTitles.includes(j.title.toLowerCase());
   });
+
+  const handleUploadToFirebase = async () => {
+    if (!selectedFile) {
+      setError('Please select a video file (.mp4, .mkv, .webm) to upload.');
+      return;
+    }
+    if (!title.trim() && !episodeTitle.trim()) {
+      setError('Please enter a title for this movie/video.');
+      return;
+    }
+
+    setIsUploadingFirebase(true);
+    setError('');
+    setFirebaseProgress(0);
+    setFirebaseStatusText('Connecting to Firebase Cloud Storage...');
+
+    try {
+      const cleanFileName = selectedFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storageRef = ref(storage, `movies/${Date.now()}_${cleanFileName}`);
+      const uploadTask = uploadBytesResumable(storageRef, selectedFile, {
+        contentType: selectedFile.type || 'video/mp4'
+      });
+
+      uploadTask.on(
+        'state_changed',
+        (snapshot) => {
+          const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+          setFirebaseProgress(progress);
+          const loadedMb = (snapshot.bytesTransferred / (1024 * 1024)).toFixed(1);
+          const totalMb = (snapshot.totalBytes / (1024 * 1024)).toFixed(1);
+          setFirebaseStatusText(`Uploading to Firebase: ${progress}% (${loadedMb} MB / ${totalMb} MB)`);
+        },
+        (uploadErr) => {
+          console.error('Firebase storage upload error:', uploadErr);
+          setError(`Firebase upload failed: ${uploadErr.message}`);
+          setIsUploadingFirebase(false);
+        },
+        async () => {
+          try {
+            const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+            setMovieStreamUrl(downloadUrl);
+            setFirebaseStatusText('✓ Upload completed! Streaming URL generated.');
+            setIsUploadingFirebase(false);
+          } catch (urlErr: any) {
+            setError(`Failed to retrieve download URL: ${urlErr.message}`);
+            setIsUploadingFirebase(false);
+          }
+        }
+      );
+    } catch (err: any) {
+      setError(err.message || 'Firebase upload failed');
+      setIsUploadingFirebase(false);
+    }
+  };
 
   const handleStartAnotherMovie = () => {
     setSelectedFile(null);
@@ -879,6 +969,8 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
           if (selectedFile) {
             await storeLocalVideo(selectedFile.name, selectedFile);
           }
+        } else if (finalMovieStreamUrl.includes('firebasestorage.googleapis.com') || finalMovieStreamUrl.includes('firebasestorage.app')) {
+          mediaPayload.storageProvider = 'firebase_storage';
         } else if (finalMovieStreamUrl.includes('drive.google.com') || finalMovieStreamUrl.includes('docs.google.com')) {
           mediaPayload.storageProvider = 'google_drive';
         } else if (finalMovieStreamUrl.includes('archive.org')) {
@@ -1324,18 +1416,6 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 <div className="grid grid-cols-3 gap-2 bg-white/5 p-1 rounded-2xl border border-white/10">
                   <button
                     type="button"
-                    onClick={() => setUploadMode('direct_upload')}
-                    className={`py-2 px-2 text-[11px] font-semibold rounded-xl flex items-center justify-center gap-1 transition-all cursor-pointer ${
-                      uploadMode === 'direct_upload'
-                        ? 'bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 shadow'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <Upload className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>Upload / Local File</span>
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setUploadMode('archive_import')}
                     className={`py-2 px-2 text-[11px] font-semibold rounded-xl flex items-center justify-center gap-1 transition-all cursor-pointer ${
                       uploadMode === 'archive_import'
@@ -1344,7 +1424,22 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                     }`}
                   >
                     <Link className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Archive.org Link</span>
+                    <span>Archive.org Library</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUploadMode('firebase_storage')}
+                    className={`py-2 px-2 text-[11px] font-semibold rounded-xl flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                      uploadMode === 'firebase_storage'
+                        ? 'bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Cloud className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Firebase Storage</span>
+                    {!isAllowedToUploadToFirebase && (
+                      <Lock className="w-3 h-3 text-amber-400" />
+                    )}
                   </button>
                   <button
                     type="button"
@@ -1360,217 +1455,238 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                   </button>
                 </div>
 
-                {/* Method A: Device / Local Video File or S3 Upload */}
-                {uploadMode === 'direct_upload' && (
-                  <div className="p-4 bg-indigo-950/20 border border-indigo-500/20 rounded-2xl space-y-3">
-                    <p className="text-xs text-slate-300">
-                      Choose a movie video file from your computer (.mp4, .mkv, .webm). You can upload it with real-time percentage tracking, or link it instantly as a local movie.
-                    </p>
-
-                    {/* If this movie is actively uploading in the background queue */}
-                    {currentUploadJob ? (
-                      <div className="p-4 bg-[#0c1322]/90 border border-sky-400/30 rounded-2xl space-y-3 shadow-xl backdrop-blur-md">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-ping" />
-                            <h4 className="text-xs font-bold text-white">
-                              {currentUploadJob.status === 'completed'
-                                ? '✓ Upload Complete & Ready to Stream'
-                                : currentUploadJob.status === 'publishing'
-                                ? 'Finalizing & Publishing to Catalog...'
-                                : 'Uploading Movie in Background'}
-                            </h4>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-mono font-bold text-sky-300 bg-sky-500/20 px-2.5 py-0.5 rounded-full border border-sky-400/30">
-                              {currentUploadJob.progress}%
-                            </span>
-                            {currentUploadJob.status === 'uploading' && (
-                              <button
-                                type="button"
-                                onClick={() => cancelUpload(currentUploadJob.id)}
-                                className="text-[10px] text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 px-2 py-0.5 rounded-lg border border-rose-500/20 cursor-pointer"
-                              >
-                                Cancel
-                              </button>
-                            )}
-                          </div>
+                {/* Firebase Cloud Storage Upload (Permission Guarded) */}
+                {uploadMode === 'firebase_storage' && (
+                  <div className="space-y-3">
+                    {!isAllowedToUploadToFirebase ? (
+                      <div className="p-6 bg-gradient-to-b from-amber-950/40 via-[#0e1424] to-black/50 border border-amber-500/30 rounded-2xl text-center space-y-3">
+                        <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30 mx-auto flex items-center justify-center shadow-lg">
+                          <Lock className="w-6 h-6" />
                         </div>
-
-                        {/* Large Percentage & Progress Bar */}
-                        <div className="space-y-1.5">
-                          <div className="w-full h-3.5 bg-black/40 rounded-full overflow-hidden p-0.5 border border-white/10 relative">
-                            <div
-                              className={`h-full rounded-full transition-all duration-300 ${
-                                currentUploadJob.status === 'completed'
-                                  ? 'bg-gradient-to-r from-emerald-400 to-teal-500'
-                                  : currentUploadJob.status === 'error'
-                                  ? 'bg-rose-500'
-                                  : 'bg-gradient-to-r from-sky-400 via-indigo-500 to-cyan-400 animate-pulse'
-                              }`}
-                              style={{ width: `${currentUploadJob.progress}%` }}
-                            />
-                          </div>
-
-                          {/* Stats Grid */}
-                          <div className="flex items-center justify-between text-[11px] font-mono text-slate-300">
-                            <span>
-                              {(currentUploadJob.loadedBytes / (1024 * 1024)).toFixed(1)} MB / {(currentUploadJob.fileSize / (1024 * 1024)).toFixed(1)} MB
-                            </span>
-                            {currentUploadJob.status === 'uploading' && (
-                              <span className="text-sky-300">
-                                {currentUploadJob.speedMBs > 0 ? `${currentUploadJob.speedMBs} MB/s` : 'Starting...'}
-                                {currentUploadJob.timeRemainingSec ? ` • ~${currentUploadJob.timeRemainingSec}s left` : ''}
-                              </span>
-                            )}
-                            {currentUploadJob.status === 'completed' && (
-                              <span className="text-emerald-400 font-sans font-medium">
-                                Published to Catalog!
-                              </span>
-                            )}
-                          </div>
+                        <h4 className="text-sm font-bold text-white font-display">
+                          Direct Firebase Storage Upload is Restricted
+                        </h4>
+                        <p className="text-xs text-slate-300 max-w-md mx-auto leading-relaxed">
+                          To protect monthly cloud storage limits, direct video uploads to Firebase Storage are exclusively authorized for the Master Admin (<strong className="text-white">Josaphat</strong>) and verified uploaders.
+                        </p>
+                        <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs text-sky-200 max-w-md mx-auto">
+                          ✨ <strong>Good news:</strong> You can post any movie, anime episode, or series folder completely free with <strong>unlimited storage</strong> using the Archive.org tab!
                         </div>
-
-                        {/* Background Helper Explainer */}
-                        <div className="px-3 py-2 bg-sky-500/10 border border-sky-400/20 rounded-xl text-xs text-sky-200">
-                          <p className="font-semibold flex items-center gap-1.5">
-                            <span>🏋🏾‍♂️</span>
-                            <span>Multi-Tasking Background Active</span>
-                          </p>
-                        </div>
-
-                        {/* Multi-upload buttons */}
-                        <div className="flex items-center gap-2 pt-1">
+                        <div className="flex items-center justify-center gap-2 pt-2">
                           <button
                             type="button"
-                            onClick={handleStartAnotherMovie}
-                            className="flex-1 py-2 px-3 bg-gradient-to-r from-sky-500/30 to-indigo-500/30 hover:from-sky-500/40 hover:to-indigo-500/40 border border-sky-400/40 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                            onClick={() => setUploadMode('archive_import')}
+                            className="px-4 py-2 bg-sky-500/30 hover:bg-sky-500/40 text-sky-200 border border-sky-400/40 rounded-xl text-xs font-semibold cursor-pointer transition-all shadow"
                           >
-                            <Plus className="w-3.5 h-3.5 text-sky-300" />
-                            <span>Upload Another Movie</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={onClose}
-                            className="py-2 px-3 bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white font-medium text-xs rounded-xl flex items-center justify-center gap-1 cursor-pointer transition-all"
-                          >
-                            <span>Minimize Window</span>
+                            Switch to Archive.org Importer
                           </button>
                         </div>
                       </div>
                     ) : (
-                      /* If not currently uploading, show file selection and upload buttons */
-                      <div className="space-y-2.5">
-                        <input
-                          type="text"
-                          placeholder="Video Title (e.g. Full Movie)"
-                          className="w-full px-3 py-2 text-xs text-slate-100 liquid-glass-input"
-                          value={episodeTitle}
-                          onChange={(e) => setEpisodeTitle(e.target.value)}
-                        />
-
-                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                          <label className="flex-1 px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/15 rounded-xl text-xs text-slate-200 cursor-pointer flex items-center gap-2 truncate">
-                            <Upload className="w-4 h-4 text-sky-400 shrink-0" />
-                            <span className="truncate">
-                              {selectedFile ? `${selectedFile.name} (${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB)` : 'Choose Movie Video (.mp4, .mkv, .webm)'}
+                      <div className="p-4 bg-indigo-950/20 border border-indigo-500/30 rounded-2xl space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                              Firebase Cloud Storage Uploader
                             </span>
-                            <input
-                              type="file"
-                              accept="video/*"
-                              className="hidden"
-                              onChange={(e) => {
-                                if (e.target.files?.[0]) {
-                                  const f = e.target.files[0];
-                                  setSelectedFile(f);
-                                  if (!episodeTitle) setEpisodeTitle(f.name.replace(/\.[^/.]+$/, ''));
-                                  if (!title) setTitle(f.name.replace(/\.[^/.]+$/, ''));
-                                  setMovieStreamUrl(`local://${f.name}`);
-                                  // Automatically store in IndexedDB for instant zero-wait local playback
-                                  storeLocalVideo(f.name, f).catch(() => {});
-                                  setUploadProgressText(`✓ Ready as Instant Local Movie (${f.name})! Click "Publish to Catalog" below to save.`);
-                                }
-                              }}
-                            />
-                          </label>
+                            <span className="text-[10px] font-mono text-emerald-300 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                              Admin Authorized ✓
+                            </span>
+                          </div>
                         </div>
 
-                        {selectedFile && mediaType === 'movie' && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setMovieStreamUrl(`local://${selectedFile.name}`);
-                                storeLocalVideo(selectedFile.name, selectedFile).catch(() => {});
-                                setUploadProgressText(`✓ Configured for Instant Local Movie! Click "Publish to Catalog" below to save.`);
-                              }}
-                              className={`p-3 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
-                                movieStreamUrl === `local://${selectedFile.name}`
-                                  ? 'bg-emerald-500/20 border-emerald-400/50 shadow-md shadow-emerald-500/10'
-                                  : 'bg-white/5 border-white/10 hover:bg-white/10'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
-                                  <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                                  Instant Local Movie
-                                </span>
-                                {movieStreamUrl === `local://${selectedFile.name}` && (
-                                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/30 px-2 py-0.5 rounded-full">
-                                    Selected ✓
-                                  </span>
+                        <p className="text-xs text-slate-300">
+                          Upload high-definition movies or episodes directly to your Firebase Google Cloud Storage bucket. Uploaded videos support instant seekable streaming and direct downloads.
+                        </p>
+
+                        <div className="space-y-3">
+                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                            <label className="flex-1 px-4 py-3 bg-white/5 hover:bg-white/10 border border-white/15 rounded-xl text-xs text-slate-200 cursor-pointer flex items-center gap-2.5 truncate transition-colors">
+                              <Upload className="w-4 h-4 text-indigo-400 shrink-0" />
+                              <span className="truncate">
+                                {selectedFile
+                                  ? `${selectedFile.name} (${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB)`
+                                  : 'Select Video File (.mp4, .mkv, .webm)'}
+                              </span>
+                              <input
+                                type="file"
+                                accept="video/mp4,video/webm,video/x-matroska,video/mkv"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0];
+                                  if (f) {
+                                    setSelectedFile(f);
+                                    if (!title) setTitle(f.name.replace(/\.[^/.]+$/, '').replace(/[._-]/g, ' '));
+                                  }
+                                }}
+                              />
+                            </label>
+
+                            {selectedFile && (
+                              <button
+                                type="button"
+                                disabled={isUploadingFirebase}
+                                onClick={handleUploadToFirebase}
+                                className="px-4 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 cursor-pointer shadow-lg transition-all shrink-0"
+                              >
+                                {isUploadingFirebase ? (
+                                  <>
+                                    <span className="animate-spin">⏳</span>
+                                    <span>Uploading ({firebaseProgress}%)...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Cloud className="w-4 h-4" />
+                                    <span>Upload to Firebase</span>
+                                  </>
                                 )}
-                              </div>
-                              <p className="text-[11px] text-slate-300">
-                                0 MB data consumed. Plays instantly from this drive in full original resolution, perfectly synchronized with your watch room!
-                              </p>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={handleStartBackgroundUpload}
-                              className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-left flex flex-col gap-1 transition-all cursor-pointer group"
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
-                                  <Cloud className="w-3.5 h-3.5 text-sky-400" />
-                                  Cloud Server Upload
-                                </span>
-                                <span className="text-[10px] text-slate-400 group-hover:text-sky-300">
-                                  Live %
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-400 group-hover:text-slate-300">
-                                Uploads to penguin view server so friends without the local file can stream from the cloud.
-                              </p>
-                            </button>
+                              </button>
+                            )}
                           </div>
-                        )}
 
-                        {selectedFile && (
-                          <div className="p-2.5 bg-sky-500/10 border border-sky-400/20 rounded-xl text-[11px] text-sky-200 flex items-start gap-2">
-                            <Info className="w-4 h-4 shrink-0 text-sky-400 mt-0.5" />
-                            <span>
-                              Uploads continue in the background if you close this or navigate away.
-                            </span>
-                          </div>
-                        )}
+                          {isUploadingFirebase && (
+                            <div className="space-y-1.5 p-3 bg-black/40 rounded-xl border border-white/10">
+                              <div className="flex items-center justify-between text-xs text-slate-300 font-mono">
+                                <span>{firebaseStatusText}</span>
+                                <span className="font-bold text-indigo-300">{firebaseProgress}%</span>
+                              </div>
+                              <div className="w-full h-3 bg-black/60 rounded-full overflow-hidden p-0.5 border border-white/10">
+                                <div
+                                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-sky-400 to-cyan-300 transition-all duration-300"
+                                  style={{ width: `${firebaseProgress}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {movieStreamUrl && movieStreamUrl.includes('firebasestorage') && (
+                            <div className="p-3 bg-emerald-500/20 border border-emerald-400/40 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
+                              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                              <span className="truncate">
+                                Video successfully uploaded to Firebase Storage! Click "Publish to Catalog" below to save.
+                              </span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-
-                    {uploadProgressText && (
-                      <p className="text-[11px] font-mono text-sky-300 animate-pulse bg-sky-500/10 p-2 rounded-lg border border-sky-400/20">
-                        {uploadProgressText}
-                      </p>
                     )}
                   </div>
                 )}
 
                 {/* Method B: Archive.org Link Import */}
                 {uploadMode === 'archive_import' && (
-                  <div className="p-4 bg-sky-950/20 border border-sky-500/20 rounded-2xl space-y-3">
+                  <div className="p-4 bg-sky-950/20 border border-sky-500/20 rounded-2xl space-y-4">
+                    {/* Josaphat's Archive.org Direct Action Bar */}
+                    <div className="p-3.5 bg-gradient-to-r from-sky-900/40 via-indigo-950/50 to-blue-900/40 border border-sky-400/30 rounded-2xl space-y-3 shadow-lg">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-300 shadow">
+                            <Film className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <span>Josaphat's Archive.org Library</span>
+                              <span className="text-[9px] font-mono bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                                Unlimited Free Storage
+                              </span>
+                            </h4>
+                            <p className="text-[11px] text-slate-300">
+                              Upload on Archive.org, then anyone with the link can post the movie or anime folder here!
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <a
+                          href="https://archive.org/details/@josaphat_chilokoto"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="py-2.5 px-3 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 hover:border-sky-300 rounded-xl text-xs font-bold text-sky-200 hover:text-white flex items-center justify-center gap-2 transition-all shadow-md group"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5 text-sky-400 group-hover:scale-110 transition-transform" />
+                          <span>Browse Josaphat's Archive.org</span>
+                        </a>
+
+                        <a
+                          href="https://archive.org/upload/"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="py-2.5 px-3 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/40 hover:border-indigo-300 rounded-xl text-xs font-bold text-indigo-200 hover:text-white flex items-center justify-center gap-2 transition-all shadow-md group"
+                        >
+                          <Upload className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform" />
+                          <span>Upload New Movie to Archive.org</span>
+                        </a>
+                      </div>
+
+                      {/* Quick Fetch Josaphat's Uploaded Items */}
+                      <div>
+                        <button
+                          type="button"
+                          onClick={fetchMyArchiveItems}
+                          disabled={isLoadingMyArchive}
+                          className="w-full py-2 px-3 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-sky-400/30 rounded-xl text-[11px] font-semibold text-slate-300 hover:text-white flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 text-sky-400 ${isLoadingMyArchive ? 'animate-spin' : ''}`} />
+                          <span>{isLoadingMyArchive ? 'Fetching from Archive.org...' : "View Josaphat's Uploaded Movies & Anime Folders"}</span>
+                        </button>
+
+                        {showMyArchiveList && (
+                          <div className="mt-2 space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                            {myArchiveItems.length > 0 ? (
+                              myArchiveItems.map((item) => (
+                                <div
+                                  key={item.identifier}
+                                  className="p-2 rounded-xl bg-black/40 hover:bg-black/60 border border-white/10 flex items-center justify-between gap-2 transition-colors"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    {item.posterUrl && (
+                                      <img
+                                        src={item.posterUrl}
+                                        alt=""
+                                        className="w-7 h-9 object-cover rounded border border-white/10 shrink-0"
+                                        onError={(e) => { (e.target as any).style.display = 'none'; }}
+                                      />
+                                    )}
+                                    <div className="min-w-0">
+                                      <p className="text-xs font-bold text-white truncate">{item.title}</p>
+                                      <p className="text-[10px] text-slate-400 font-mono truncate">ID: {item.identifier}</p>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <a
+                                      href={item.detailsUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white"
+                                      title="View on Archive.org"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setArchiveUrlInput(item.detailsUrl || item.identifier);
+                                        handleInspectArchive(item.identifier);
+                                      }}
+                                      className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/40 text-sky-300 border border-sky-400/30 text-[10px] font-bold rounded-lg cursor-pointer"
+                                    >
+                                      Import 1-Click
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            ) : !isLoadingMyArchive ? (
+                              <div className="p-3 text-center bg-black/30 rounded-xl border border-white/5 text-[11px] text-slate-400">
+                                No items found yet. Once you upload to Archive.org, paste the link below or click refresh!
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                     {/* Direct Archive.org Movie Search */}
                     <div className="p-3 bg-white/5 border border-white/10 rounded-xl space-y-2">
                       <div className="flex items-center justify-between">

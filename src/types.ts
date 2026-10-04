@@ -115,7 +115,7 @@ export interface MediaItem {
   seasons?: MediaSeason[];
 
   // Storage & Attribution:
-  storageProvider?: 'archive_org' | 'google_drive' | 'cloudflare_r2' | 'direct_url' | 'local';
+  storageProvider?: 'archive_org' | 'google_drive' | 'cloudflare_r2' | 'firebase_storage' | 'direct_url' | 'local';
   archiveItemId?: string;
   uploadedByUid: string;
   uploadedByName: string;

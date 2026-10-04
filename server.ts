@@ -24,8 +24,8 @@ if (!fs.existsSync(CHUNKS_TEMP_DIR)) {
 }
 
 // Default archive keys provided for instant usability, overridden by env if present
-const ARCHIVE_ACCESS_KEY = process.env.ARCHIVE_S3_ACCESS_KEY || 'XgsBgjpbB8qhGCak';
-const ARCHIVE_SECRET_KEY = process.env.ARCHIVE_S3_SECRET_KEY || 's0pBbUEfuqXG1crR';
+const ARCHIVE_ACCESS_KEY = process.env.ARCHIVE_S3_ACCESS_KEY || 'HTrkgqZCPwTG1GkG';
+const ARCHIVE_SECRET_KEY = process.env.ARCHIVE_S3_SECRET_KEY || 'HO0F2mTdXkUCtvTq';
 
 // Middleware for parsing JSON and urlencoded data
 app.use(express.json({ limit: '50mb' }));
@@ -188,9 +188,13 @@ const handleArchiveInspect = async (req: Request, res: Response) => {
       return;
     }
 
-    // Step 1: Fetch public metadata from Archive.org
+    // Step 1: Fetch metadata from Archive.org with S3 authorization headers
+    const authHeaders: Record<string, string> = { 'User-Agent': 'PenguinView/2.0' };
+    if (ARCHIVE_ACCESS_KEY && ARCHIVE_SECRET_KEY) {
+      authHeaders['Authorization'] = `LOW ${ARCHIVE_ACCESS_KEY}:${ARCHIVE_SECRET_KEY}`;
+    }
     let metaResponse = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`, {
-      headers: { 'User-Agent': 'PenguinView/2.0' }
+      headers: authHeaders
     });
 
     let data: any = metaResponse.ok ? await metaResponse.json() : null;
@@ -332,6 +336,42 @@ const handleArchiveInspect = async (req: Request, res: Response) => {
 
 app.post('/api/archive/inspect', handleArchiveInspect);
 app.get('/api/archive/inspect', handleArchiveInspect);
+
+// Fetch items uploaded to Josaphat's Archive.org collection
+app.get('/api/archive/my-items', async (req: Request, res: Response) => {
+  try {
+    const searchUrl = `https://archive.org/advancedsearch.php?q=(uploader:*josaphat*+OR+uploader:*Josaphatkychiloz*+OR+creator:*Josaphat*+OR+identifier:*penguin-view*)&fl[]=identifier,title,description,mediatype,publicdate,downloads&sort[]=publicdate+desc&output=json&rows=30`;
+    const searchRes = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'PenguinView/2.0',
+        ...(ARCHIVE_ACCESS_KEY && ARCHIVE_SECRET_KEY ? { 'Authorization': `LOW ${ARCHIVE_ACCESS_KEY}:${ARCHIVE_SECRET_KEY}` } : {})
+      }
+    });
+
+    if (!searchRes.ok) {
+      res.json({ success: true, items: [] });
+      return;
+    }
+
+    const data: any = await searchRes.json();
+    const docs = data?.response?.docs || [];
+    res.json({
+      success: true,
+      items: docs.map((d: any) => ({
+        identifier: d.identifier,
+        title: d.title || d.identifier,
+        description: d.description || '',
+        mediatype: d.mediatype || 'movies',
+        publicDate: d.publicdate,
+        detailsUrl: `https://archive.org/details/${d.identifier}`,
+        streamUrl: `https://archive.org/details/${d.identifier}`,
+        posterUrl: `https://archive.org/services/img/${encodeURIComponent(d.identifier)}`
+      }))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to list archive items' });
+  }
+});
 
 // High-performance video streaming endpoint with HTTP 206 Partial Content (Range requests)
 app.get('/api/videos/:filename', (req: Request, res: Response) => {
