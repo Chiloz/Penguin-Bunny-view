@@ -336,10 +336,18 @@ const handleArchiveInspect = async (req: Request, res: Response) => {
 app.post('/api/archive/inspect', handleArchiveInspect);
 app.get('/api/archive/inspect', handleArchiveInspect);
 
-// Fetch items uploaded to Josaphat's Archive.org collection
+// Fetch items uploaded to Josaphat's Archive.org collection or any friend account
 app.get('/api/archive/my-items', async (req: Request, res: Response) => {
   try {
-    const searchUrl = `https://archive.org/advancedsearch.php?q=(uploader:*josaphat*+OR+uploader:*Josaphatkychiloz*+OR+creator:*Josaphat*+OR+identifier:*penguin-view*)&fl[]=identifier,title,description,mediatype,publicdate,downloads&sort[]=publicdate+desc&output=json&rows=30`;
+    const rawHandle = req.query.handle ? String(req.query.handle).trim() : '';
+    let queryClause = `(uploader:*josaphat* OR uploader:*Josaphatkychiloz* OR creator:*Josaphat* OR identifier:*penguin-view*)`;
+    
+    if (rawHandle) {
+      const cleanHandle = rawHandle.replace(/[^a-zA-Z0-9_@.-]/g, '');
+      queryClause = `(uploader:*${cleanHandle}* OR creator:*${cleanHandle}* OR identifier:*${cleanHandle}*)`;
+    }
+
+    const searchUrl = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(queryClause)}&fl[]=identifier,title,description,mediatype,publicdate,downloads&sort[]=publicdate+desc&output=json&rows=50`;
     const searchRes = await fetch(searchUrl, {
       headers: {
         'User-Agent': 'PenguinView/2.0',
@@ -356,6 +364,7 @@ app.get('/api/archive/my-items', async (req: Request, res: Response) => {
     const docs = data?.response?.docs || [];
     res.json({
       success: true,
+      handle: rawHandle || 'josaphat_chilokoto',
       items: docs.map((d: any) => ({
         identifier: d.identifier,
         title: d.title || d.identifier,

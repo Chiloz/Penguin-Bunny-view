@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { UserProfile, MediaItem, MediaSeason, MediaEpisode } from '../types';
 import { db, storage, cleanForFirestore } from '../firebase';
-import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, doc, updateDoc, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { LiquidGlassCard } from './LiquidGlassCard';
 import { useUpload } from '../context/UploadContext';
@@ -123,16 +123,45 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
   const [firebaseProgress, setFirebaseProgress] = useState<number>(0);
   const [firebaseStatusText, setFirebaseStatusText] = useState<string>('');
 
-  // Josaphat Archive Collection Items State
+  interface ArchiveAccount {
+    id: string;
+    name: string;
+    handle: string;
+  }
+
+  const DEFAULT_ACCOUNTS: ArchiveAccount[] = [
+    { id: 'josaphat', name: 'Josaphat', handle: 'josaphat_chilokoto' }
+  ];
+
+  const [archiveAccounts, setArchiveAccounts] = useState<ArchiveAccount[]>(() => {
+    try {
+      const saved = localStorage.getItem('penguin_archive_accounts');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_ACCOUNTS;
+  });
+
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('josaphat');
+  const [showAddAccountInput, setShowAddAccountInput] = useState<boolean>(false);
+  const [newAccountName, setNewAccountName] = useState<string>('');
+  const [newAccountHandle, setNewAccountHandle] = useState<string>('');
+
+  const activeAccount = archiveAccounts.find(a => a.id === selectedAccountId) || archiveAccounts[0];
+
+  // Archive Collection Items State
   const [myArchiveItems, setMyArchiveItems] = useState<any[]>([]);
   const [isLoadingMyArchive, setIsLoadingMyArchive] = useState<boolean>(false);
   const [showMyArchiveList, setShowMyArchiveList] = useState<boolean>(false);
 
-  const fetchMyArchiveItems = async () => {
+  const fetchMyArchiveItems = async (handleToFetch?: string) => {
+    const handle = handleToFetch || activeAccount.handle;
     setIsLoadingMyArchive(true);
     setShowMyArchiveList(true);
     try {
-      const res = await fetch('/api/archive/my-items');
+      const res = await fetch(`/api/archive/my-items?handle=${encodeURIComponent(handle)}`);
       if (res.ok) {
         const data = await res.json();
         setMyArchiveItems(data.items || []);
@@ -142,6 +171,39 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
     } finally {
       setIsLoadingMyArchive(false);
     }
+  };
+
+  const handleAddFriendAccount = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAccountHandle.trim()) return;
+    const name = newAccountName.trim() || newAccountHandle.replace(/@.*/, '').trim() || 'Friend';
+    const cleanHandle = newAccountHandle.trim().replace(/^@/, '');
+    const newAcc: ArchiveAccount = {
+      id: `acc_${Date.now()}`,
+      name,
+      handle: cleanHandle
+    };
+    const updated = [...archiveAccounts, newAcc];
+    setArchiveAccounts(updated);
+    try {
+      localStorage.setItem('penguin_archive_accounts', JSON.stringify(updated));
+    } catch {}
+    setSelectedAccountId(newAcc.id);
+    setNewAccountName('');
+    setNewAccountHandle('');
+    setShowAddAccountInput(false);
+    fetchMyArchiveItems(cleanHandle);
+  };
+
+  const handleRemoveFriendAccount = (accId: string) => {
+    if (accId === 'josaphat') return;
+    const updated = archiveAccounts.filter(a => a.id !== accId);
+    setArchiveAccounts(updated);
+    try {
+      localStorage.setItem('penguin_archive_accounts', JSON.stringify(updated));
+    } catch {}
+    setSelectedAccountId('josaphat');
+    fetchMyArchiveItems('josaphat_chilokoto');
   };
   
   // Basic metadata
@@ -1577,8 +1639,102 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 {/* Method B: Archive.org Link Import */}
                 {uploadMode === 'archive_import' && (
                   <div className="p-4 bg-sky-950/20 border border-sky-500/20 rounded-2xl space-y-4">
-                    {/* Josaphat's Archive.org Direct Action Bar */}
-                    <div className="p-3.5 bg-gradient-to-r from-sky-900/40 via-indigo-950/50 to-blue-900/40 border border-sky-400/30 rounded-2xl space-y-3 shadow-lg">
+                    {/* Archive.org Multi-Account Action Bar */}
+                    <div className="p-3.5 bg-gradient-to-r from-sky-900/40 via-indigo-950/50 to-blue-900/40 border border-sky-400/30 rounded-2xl space-y-3.5 shadow-lg">
+                      {/* Account Switcher Tabs */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] uppercase font-mono font-bold text-sky-300 mr-1">
+                            Account:
+                          </span>
+                          {archiveAccounts.map((acc) => (
+                            <div key={acc.id} className="relative group">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAccountId(acc.id);
+                                  fetchMyArchiveItems(acc.handle);
+                                }}
+                                className={`px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                                  selectedAccountId === acc.id
+                                    ? 'bg-sky-500 text-white shadow-md shadow-sky-500/30 font-bold'
+                                    : 'bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                <span>👤 {acc.name}</span>
+                                {acc.id !== 'josaphat' && (
+                                  <span
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleRemoveFriendAccount(acc.id);
+                                    }}
+                                    className="ml-1 text-red-300 hover:text-red-100 hover:scale-125 transition-transform"
+                                    title="Remove friend account"
+                                  >
+                                    ×
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+                          ))}
+
+                          <button
+                            type="button"
+                            onClick={() => setShowAddAccountInput(!showAddAccountInput)}
+                            className="px-2.5 py-1 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 text-sky-200 text-xs font-semibold flex items-center gap-1 cursor-pointer transition-all"
+                            title="Add a friend's Archive.org account"
+                          >
+                            <Plus className="w-3 h-3 text-sky-400" />
+                            <span>Add Friend</span>
+                          </button>
+                        </div>
+
+                        <span className="text-[9px] font-mono bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                          Unlimited Free Storage
+                        </span>
+                      </div>
+
+                      {/* Add Friend Account Form */}
+                      {showAddAccountInput && (
+                        <form onSubmit={handleAddFriendAccount} className="p-3 bg-black/50 border border-sky-400/30 rounded-xl space-y-2">
+                          <p className="text-[11px] font-bold text-sky-200">
+                            Add Friend's Internet Archive Account
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <input
+                              type="text"
+                              placeholder="Friend's Name (e.g. Alex)"
+                              value={newAccountName}
+                              onChange={(e) => setNewAccountName(e.target.value)}
+                              className="px-2.5 py-1.5 text-xs text-white liquid-glass-input"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Archive Handle or Email (e.g. alex_archive or alex@gmail.com)"
+                              value={newAccountHandle}
+                              onChange={(e) => setNewAccountHandle(e.target.value)}
+                              className="px-2.5 py-1.5 text-xs text-white liquid-glass-input"
+                              required
+                            />
+                          </div>
+                          <div className="flex items-center justify-end gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => setShowAddAccountInput(false)}
+                              className="px-2.5 py-1 rounded-lg text-slate-400 hover:text-white text-xs"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              className="px-3 py-1 bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-lg text-xs cursor-pointer shadow"
+                            >
+                              Save Friend Account
+                            </button>
+                          </div>
+                        </form>
+                      )}
+
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2.5">
                           <div className="w-9 h-9 rounded-xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-300 shadow">
@@ -1586,10 +1742,7 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                           </div>
                           <div>
                             <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
-                              <span>Josaphat's Archive.org Library</span>
-                              <span className="text-[9px] font-mono bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30">
-                                Unlimited Free Storage
-                              </span>
+                              <span>{activeAccount.name}'s Archive.org Library</span>
                             </h4>
                             <p className="text-[11px] text-slate-300">
                               Upload on Archive.org, then anyone with the link can post the movie or anime folder here!
@@ -1600,13 +1753,13 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <a
-                          href="https://archive.org/details/@josaphat_chilokoto"
+                          href={`https://archive.org/details/@${encodeURIComponent(activeAccount.handle)}`}
                           target="_blank"
                           rel="noreferrer"
                           className="py-2.5 px-3 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 hover:border-sky-300 rounded-xl text-xs font-bold text-sky-200 hover:text-white flex items-center justify-center gap-2 transition-all shadow-md group"
                         >
                           <ExternalLink className="w-3.5 h-3.5 text-sky-400 group-hover:scale-110 transition-transform" />
-                          <span>Browse Josaphat's Archive.org</span>
+                          <span>Browse {activeAccount.name}'s Archive</span>
                         </a>
 
                         <a
@@ -1620,16 +1773,16 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                         </a>
                       </div>
 
-                      {/* Quick Fetch Josaphat's Uploaded Items */}
+                      {/* Quick Fetch Uploaded Items */}
                       <div>
                         <button
                           type="button"
-                          onClick={fetchMyArchiveItems}
+                          onClick={() => fetchMyArchiveItems()}
                           disabled={isLoadingMyArchive}
                           className="w-full py-2 px-3 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-sky-400/30 rounded-xl text-[11px] font-semibold text-slate-300 hover:text-white flex items-center justify-center gap-1.5 transition-all cursor-pointer"
                         >
                           <RefreshCw className={`w-3.5 h-3.5 text-sky-400 ${isLoadingMyArchive ? 'animate-spin' : ''}`} />
-                          <span>{isLoadingMyArchive ? 'Fetching from Archive.org...' : "View Josaphat's Uploaded Movies & Anime Folders"}</span>
+                          <span>{isLoadingMyArchive ? 'Fetching from Archive.org...' : `View ${activeAccount.name}'s Uploaded Movies & Anime Folders`}</span>
                         </button>
 
                         {showMyArchiveList && (
@@ -2394,6 +2547,26 @@ export const MediaUploadModal: React.FC<MediaUploadModalProps> = ({
                 </div>
 
                 <div className="flex items-center justify-end gap-2 shrink-0">
+                  {existingMediaItem && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (window.confirm(`Are you sure you want to remove "${existingMediaItem.title}" from Penguin View?`)) {
+                          try {
+                            await deleteDoc(doc(db, 'media_items', existingMediaItem.id));
+                            onClose();
+                          } catch (err: any) {
+                            alert('Failed to delete: ' + err.message);
+                          }
+                        }
+                      }}
+                      className="px-3.5 py-2 text-xs font-bold text-red-300 hover:text-white rounded-xl bg-red-500/20 hover:bg-red-600 border border-red-500/30 transition-all cursor-pointer flex items-center gap-1.5 mr-auto"
+                      title="Delete this title from Penguin View"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                      <span>Delete Title</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={onClose}

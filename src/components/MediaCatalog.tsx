@@ -17,11 +17,14 @@ import {
   Download,
   UploadCloud,
   ChevronRight,
-  ExternalLink
+  ExternalLink,
+  Trash2,
+  AlertTriangle,
+  Edit
 } from 'lucide-react';
 import { MediaItem, MediaEpisode, UserProfile } from '../types';
 import { db } from '../firebase';
-import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, query, onSnapshot, orderBy, addDoc, serverTimestamp, getDocs, deleteDoc, doc } from 'firebase/firestore';
 import { LiquidGlassCard } from './LiquidGlassCard';
 import { SeriesFolderView } from './SeriesFolderView';
 import { MediaUploadModal } from './MediaUploadModal';
@@ -148,9 +151,37 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
   const [isAdminDrawerOpen, setIsAdminDrawerOpen] = useState<boolean>(false);
   const [editingItem, setEditingItem] = useState<MediaItem | null>(null);
 
+  // Deletion State
+  const [itemToDelete, setItemToDelete] = useState<MediaItem | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [deleteNotice, setDeleteNotice] = useState<string>('');
+
   // Check Master Admin
   const isMasterAdmin = currentUser.email.toLowerCase() === 'josaphatkychiloz@gmail.com' || currentUser.role === 'master_admin';
   const isUploader = isMasterAdmin || currentUser.role === 'uploader';
+
+  const canManageItem = (item: MediaItem) => {
+    return isMasterAdmin || isUploader || item.uploadedByUid === currentUser.uid;
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!itemToDelete) return;
+    try {
+      setIsDeleting(true);
+      await deleteDoc(doc(db, 'media_items', itemToDelete.id));
+      setDeleteNotice(`"${itemToDelete.title}" has been deleted from Penguin View.`);
+      if (activeSeries?.id === itemToDelete.id) {
+        setActiveSeries(null);
+      }
+      setItemToDelete(null);
+      setTimeout(() => setDeleteNotice(''), 4500);
+    } catch (err: any) {
+      console.error("Failed to delete media item:", err);
+      alert("Failed to delete media item: " + (err.message || 'Permission denied'));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Real-time Firestore subscription to media_items
   useEffect(() => {
@@ -241,6 +272,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
           setEditingItem(item);
           setIsUploadModalOpen(true);
         }}
+        onDeleteSeries={(item) => setItemToDelete(item)}
         onRequestEpisodes={() => setIsRequestModalOpen(true)}
       />
     );
@@ -249,6 +281,22 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
   return (
     <div className="space-y-6 font-sans animate-in fade-in duration-200">
       
+      {/* Deletion Toast / Notice */}
+      {deleteNotice && (
+        <div className="p-3.5 bg-red-950/80 border border-red-500/40 rounded-2xl text-red-200 text-xs flex items-center justify-between gap-3 shadow-lg backdrop-blur-md animate-in fade-in duration-200">
+          <div className="flex items-center gap-2.5">
+            <Trash2 className="w-4 h-4 text-red-400 shrink-0" />
+            <span className="font-semibold text-white">{deleteNotice}</span>
+          </div>
+          <button
+            onClick={() => setDeleteNotice('')}
+            className="p-1 hover:bg-white/10 rounded-lg text-slate-300 hover:text-white cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Top Banner & Action Controls */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-sky-950/40 via-indigo-950/40 to-[#0e1424]/60 p-5 sm:p-6 rounded-3xl border border-white/10 backdrop-blur-md shadow-xl">
         <div className="space-y-1 text-left">
@@ -420,7 +468,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
                 )}
 
                 {/* Top Badge: Type & Audio */}
-                <div className="absolute top-2 left-2 flex flex-col gap-1 items-start">
+                <div className="absolute top-2 left-2 flex flex-col gap-1 items-start z-10">
                   <span className="px-2 py-0.5 rounded-md bg-black/80 backdrop-blur-md text-[9px] font-mono font-bold uppercase tracking-wider text-sky-300 border border-white/10">
                     {item.type}
                   </span>
@@ -431,33 +479,84 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
                   )}
                 </div>
 
+                {/* Top Right: Delete & Edit buttons for authorized users */}
+                {canManageItem(item) && (
+                  <div className="absolute top-2 right-2 flex items-center gap-1 z-20">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingItem(item);
+                        setIsUploadModalOpen(true);
+                      }}
+                      className="p-1.5 rounded-lg bg-black/80 hover:bg-indigo-600 text-slate-300 hover:text-white backdrop-blur-md border border-white/20 transition-all shadow-lg cursor-pointer"
+                      title="Edit / Replace video link"
+                    >
+                      <Edit className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setItemToDelete(item);
+                      }}
+                      className="p-1.5 rounded-lg bg-black/80 hover:bg-red-600 text-red-300 hover:text-white backdrop-blur-md border border-white/20 transition-all shadow-lg cursor-pointer group/del"
+                      title="Delete from Penguin View"
+                    >
+                      <Trash2 className="w-3 h-3 group-hover/del:scale-110 transition-transform" />
+                    </button>
+                  </div>
+                )}
+
                 {/* Rating Badge */}
                 {item.rating && (
-                  <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-black/80 backdrop-blur-md text-[10px] font-bold text-amber-400 flex items-center gap-1 border border-white/10">
+                  <div className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded-md bg-black/80 backdrop-blur-md text-[10px] font-bold text-amber-400 flex items-center gap-1 border border-white/10 z-10">
                     <Star className="w-3 h-3 fill-amber-400" />
                     <span>{item.rating}</span>
                   </div>
                 )}
 
                 {/* Hover overlay with quick action */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-end p-3 text-left">
-                  {item.type === 'movie' ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleStartMovieParty(item);
-                      }}
-                      className="w-full py-2 bg-gradient-to-r from-sky-400 to-indigo-600 text-white font-bold text-xs rounded-xl shadow-lg flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-white" />
-                      <span>Watch Party</span>
-                    </button>
-                  ) : (
-                    <div className="w-full py-2 bg-indigo-600/90 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg flex items-center justify-center gap-1.5">
-                      <Folder className="w-3.5 h-3.5" />
-                      <span>Open Folder</span>
-                    </div>
-                  )}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/50 to-black/20 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-between p-3 text-left z-20">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono font-bold text-sky-300 uppercase tracking-wider">
+                      {item.storageProvider === 'firebase' ? '🔥 Firebase' : '☁️ Archive'}
+                    </span>
+                    {canManageItem(item) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setItemToDelete(item);
+                        }}
+                        className="px-2 py-1 rounded-lg bg-red-600/90 hover:bg-red-600 text-white text-[10px] font-bold flex items-center gap-1 shadow cursor-pointer active:scale-95"
+                        title="Delete from Penguin View"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {item.type === 'movie' ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleStartMovieParty(item);
+                        }}
+                        className="w-full py-2 bg-gradient-to-r from-sky-400 to-indigo-600 text-white font-bold text-xs rounded-xl shadow-lg flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-white" />
+                        <span>Watch Party</span>
+                      </button>
+                    ) : (
+                      <div className="w-full py-2 bg-indigo-600/90 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg flex items-center justify-center gap-1.5">
+                        <Folder className="w-3.5 h-3.5" />
+                        <span>Open Folder</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -507,6 +606,61 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
         onClose={() => setIsAdminDrawerOpen(false)}
         currentUser={currentUser}
       />
+
+      {/* Delete Confirmation Modal */}
+      {itemToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-[#0d1322] border border-red-500/40 rounded-3xl p-6 shadow-2xl space-y-5 text-left relative overflow-hidden">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-center justify-center text-red-400 shrink-0">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white">
+                  Remove "{itemToDelete.title}"?
+                </h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  This will permanently remove this {itemToDelete.type} from Penguin View so you can re-upload a working or higher-quality version.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-red-950/30 border border-red-500/20 rounded-xl text-[11px] text-red-200 space-y-1">
+              <p className="font-semibold flex items-center gap-1.5 text-red-300">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                <span>Confirm Removal</span>
+              </p>
+              <p className="text-red-300/80">
+                Title: <strong>{itemToDelete.title}</strong> {itemToDelete.releaseYear ? `(${itemToDelete.releaseYear})` : ''}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setItemToDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-semibold transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteConfirm}
+                disabled={isDeleting}
+                className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all shadow-lg shadow-red-600/30 flex items-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <span className="animate-spin text-sm">⏳</span>
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+                <span>{isDeleting ? 'Deleting...' : 'Yes, Delete Movie'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

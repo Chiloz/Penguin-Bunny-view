@@ -13,6 +13,7 @@ import {
   Share2, 
   ExternalLink,
   Edit,
+  Trash2,
   X
 } from 'lucide-react';
 import { MediaItem, MediaEpisode, UserProfile } from '../types';
@@ -26,6 +27,7 @@ interface SeriesFolderViewProps {
   onBack: () => void;
   onStartWatchParty: (episode: MediaEpisode, series: MediaItem, seasonNumber: number) => void;
   onEditSeries?: (series: MediaItem) => void;
+  onDeleteSeries?: (series: MediaItem) => void;
   onRequestEpisodes?: () => void;
 }
 
@@ -37,6 +39,7 @@ export const SeriesFolderView: React.FC<SeriesFolderViewProps> = ({
   onBack,
   onStartWatchParty,
   onEditSeries,
+  onDeleteSeries,
   onRequestEpisodes
 }) => {
   const seasons = series.seasons || [];
@@ -95,7 +98,18 @@ export const SeriesFolderView: React.FC<SeriesFolderViewProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-200 text-xs font-semibold transition-all cursor-pointer"
             >
               <Edit className="w-3.5 h-3.5" />
-              Manage Episodes
+              <span>Manage Episodes</span>
+            </button>
+          )}
+
+          {(isMasterAdmin || isUploader || series.uploadedByUid === currentUser.uid) && onDeleteSeries && (
+            <button
+              onClick={() => onDeleteSeries(series)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-200 text-xs font-semibold transition-all cursor-pointer"
+              title="Delete this title from Penguin View"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-400" />
+              <span>Delete Title</span>
             </button>
           )}
         </div>
