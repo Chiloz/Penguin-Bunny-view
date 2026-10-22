@@ -20,7 +20,9 @@ import {
   ExternalLink,
   Trash2,
   AlertTriangle,
-  Edit
+  Edit,
+  X,
+  Users
 } from 'lucide-react';
 import { MediaItem, MediaEpisode, UserProfile } from '../types';
 import { db } from '../firebase';
@@ -145,11 +147,29 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
   // Selected series for Folder View
   const [activeSeries, setActiveSeries] = useState<MediaItem | null>(null);
 
+  // Selected movie for Movie Details & Play Options Modal (Solves phone watch issue)
+  const [selectedMovie, setSelectedMovie] = useState<MediaItem | null>(null);
+  const [showMovieTrailerModal, setShowMovieTrailerModal] = useState<boolean>(false);
+
   // Modals
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [isRequestModalOpen, setIsRequestModalOpen] = useState<boolean>(false);
   const [isAdminDrawerOpen, setIsAdminDrawerOpen] = useState<boolean>(false);
   const [editingItem, setEditingItem] = useState<MediaItem | null>(null);
+
+  // Trailer URL embed parser
+  const getEmbedUrl = (url?: string) => {
+    if (!url) return '';
+    if (url.includes('youtube.com/watch?v=')) {
+      const vid = url.split('v=')[1]?.split('&')[0];
+      return `https://www.youtube.com/embed/${vid}?autoplay=1`;
+    }
+    if (url.includes('youtu.be/')) {
+      const vid = url.split('youtu.be/')[1]?.split('?')[0];
+      return `https://www.youtube.com/embed/${vid}?autoplay=1`;
+    }
+    return url;
+  };
 
   // Deletion State
   const [itemToDelete, setItemToDelete] = useState<MediaItem | null>(null);
@@ -440,11 +460,13 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
             <div
               key={item.id}
               onClick={() => {
-                if (item.type !== 'movie') {
+                if (item.type === 'movie') {
+                  setSelectedMovie(item);
+                } else {
                   setActiveSeries(item);
                 }
               }}
-              className="group relative rounded-2xl overflow-hidden bg-slate-900/60 border border-white/10 hover:border-sky-400/50 transition-all duration-300 flex flex-col justify-between shadow-lg hover:shadow-2xl hover:shadow-sky-500/10 cursor-pointer"
+              className="group relative rounded-2xl overflow-hidden bg-slate-900/60 border border-white/10 hover:border-sky-400/50 transition-all duration-300 flex flex-col justify-between shadow-lg hover:shadow-2xl hover:shadow-sky-500/10 cursor-pointer active:scale-[0.98]"
             >
               {/* Poster Container */}
               <div className="aspect-[2/3] w-full relative overflow-hidden bg-slate-800">
@@ -478,6 +500,15 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
                     </span>
                   )}
                 </div>
+
+                {/* Center Play Indicator for Movies (Prominently visible on phone) */}
+                {item.type === 'movie' && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                    <div className="w-10 h-10 rounded-full bg-sky-500/90 sm:bg-sky-500/70 text-white flex items-center justify-center shadow-lg backdrop-blur-md sm:opacity-0 group-hover:opacity-100 transition-all duration-300 transform group-hover:scale-110">
+                      <Play className="w-4 h-4 fill-white ml-0.5" />
+                    </div>
+                  </div>
+                )}
 
                 {/* Top Right: Delete & Edit buttons for authorized users */}
                 {canManageItem(item) && (
@@ -516,8 +547,8 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
                   </div>
                 )}
 
-                {/* Hover overlay with quick action */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/50 to-black/20 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-between p-3 text-left z-20">
+                {/* Desktop hover overlay with quick action */}
+                <div className="hidden sm:flex absolute inset-0 bg-gradient-to-t from-black/95 via-black/50 to-black/20 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex-col justify-between p-3 text-left z-20">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-mono font-bold text-sky-300 uppercase tracking-wider">
                       {item.storageProvider === 'firebase' ? '🔥 Firebase' : '☁️ Archive'}
@@ -543,12 +574,12 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleStartMovieParty(item);
+                          setSelectedMovie(item);
                         }}
                         className="w-full py-2 bg-gradient-to-r from-sky-400 to-indigo-600 text-white font-bold text-xs rounded-xl shadow-lg flex items-center justify-center gap-1.5 cursor-pointer active:scale-95"
                       >
                         <Play className="w-3.5 h-3.5 fill-white" />
-                        <span>Watch Party</span>
+                        <span>Watch Movie</span>
                       </button>
                     ) : (
                       <div className="w-full py-2 bg-indigo-600/90 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg flex items-center justify-center gap-1.5">
@@ -560,17 +591,48 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
                 </div>
               </div>
 
-              {/* Title & Metadata Card Footer */}
-              <div className="p-3 text-left space-y-1 bg-[#090e1c]">
-                <h3 className="text-xs font-bold text-white group-hover:text-sky-300 transition-colors line-clamp-1 font-display">
-                  {item.title}
-                </h3>
-                <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                  <span>{item.releaseYear || '2024'}</span>
+              {/* Title & Metadata Card Footer with Mobile Touch Button */}
+              <div className="p-3 text-left space-y-1.5 bg-[#090e1c] flex flex-col justify-between flex-grow">
+                <div>
+                  <h3 className="text-xs font-bold text-white group-hover:text-sky-300 transition-colors line-clamp-1 font-display">
+                    {item.title}
+                  </h3>
+                  <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mt-0.5">
+                    <span>{item.releaseYear || '2024'}</span>
+                    {item.type === 'movie' ? (
+                      <span>{item.duration ? `${item.duration}m` : 'Movie'}</span>
+                    ) : (
+                      <span>{item.seasons?.length || 1} Season{(item.seasons?.length || 1) > 1 ? 's' : ''}</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Mobile & Desktop Action Buttons */}
+                <div className="pt-1">
                   {item.type === 'movie' ? (
-                    <span>{item.duration ? `${item.duration}m` : 'Movie'}</span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedMovie(item);
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white text-[11px] font-bold shadow-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                    >
+                      <Play className="w-3 h-3 fill-white" />
+                      <span>Watch Movie</span>
+                    </button>
                   ) : (
-                    <span>{item.seasons?.length || 1} Season{(item.seasons?.length || 1) > 1 ? 's' : ''}</span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveSeries(item);
+                      }}
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 hover:text-white text-[11px] font-semibold border border-white/10 flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                    >
+                      <Folder className="w-3 h-3 text-sky-400" />
+                      <span>View Episodes</span>
+                    </button>
                   )}
                 </div>
               </div>
@@ -657,6 +719,252 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
                 )}
                 <span>{isDeleting ? 'Deleting...' : 'Yes, Delete Movie'}</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Movie Details & Play Options Modal (Tapping a movie brings this on phones and desktop) */}
+      {selectedMovie && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-in fade-in duration-200 overflow-y-auto"
+          onClick={() => {
+            setSelectedMovie(null);
+            setShowMovieTrailerModal(false);
+          }}
+        >
+          <div 
+            className="w-full max-w-xl bg-[#0b101e]/95 border border-white/15 rounded-3xl p-5 sm:p-7 shadow-2xl relative text-left overflow-hidden space-y-5 my-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Top Bar with Badge & Close Button */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold tracking-wider uppercase bg-sky-500/20 text-sky-300 border border-sky-400/30 flex items-center gap-1.5">
+                  <Film className="w-3.5 h-3.5" />
+                  Movie Stream
+                </span>
+                {selectedMovie.releaseYear && (
+                  <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300 text-xs font-mono border border-white/10">
+                    {selectedMovie.releaseYear}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMovie(null);
+                  setShowMovieTrailerModal(false);
+                }}
+                className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white transition-all cursor-pointer"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Poster and Details Layout */}
+            <div className="flex flex-col sm:flex-row gap-5 items-start">
+              {/* Poster Card */}
+              <div className="w-28 sm:w-36 aspect-[2/3] rounded-2xl overflow-hidden bg-slate-800 border border-white/15 shadow-xl shrink-0 mx-auto sm:mx-0 relative">
+                {selectedMovie.posterUrl ? (
+                  <img
+                    src={selectedMovie.posterUrl}
+                    alt={selectedMovie.title}
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center bg-gradient-to-br from-slate-900 to-indigo-950">
+                    <Film className="w-8 h-8 text-sky-400 mb-2" />
+                    <span className="text-[11px] font-bold text-slate-300 line-clamp-2">{selectedMovie.title}</span>
+                  </div>
+                )}
+                {selectedMovie.rating && (
+                  <div className="absolute bottom-2 left-2 px-1.5 py-0.5 rounded-md bg-black/80 backdrop-blur-md text-[10px] font-bold text-amber-400 flex items-center gap-1 border border-white/10">
+                    <Star className="w-3 h-3 fill-amber-400" />
+                    <span>{selectedMovie.rating}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Title & Metadata */}
+              <div className="space-y-2.5 flex-grow text-left">
+                <div>
+                  <h3 className="text-xl sm:text-2xl font-bold text-white font-display leading-tight">
+                    {selectedMovie.title}
+                  </h3>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300 font-mono mt-1">
+                    {selectedMovie.duration && (
+                      <span className="flex items-center gap-1 text-slate-300">
+                        <Clock className="w-3.5 h-3.5 text-sky-400" />
+                        {selectedMovie.duration} mins
+                      </span>
+                    )}
+                    {selectedMovie.audioLang && (
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-950/80 text-indigo-300 border border-indigo-500/30 text-[10px]">
+                        {selectedMovie.audioLang}
+                      </span>
+                    )}
+                    <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-400 text-[10px] border border-white/10">
+                      {selectedMovie.storageProvider === 'firebase' ? '🔥 Firebase' : '☁️ Archive Cloud'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Genre Chips */}
+                {selectedMovie.genres && selectedMovie.genres.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedMovie.genres.map((g, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-sky-500/10 text-sky-300 border border-sky-500/20"
+                      >
+                        {g}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Synopsis / Description */}
+                <p className="text-xs text-slate-300 leading-relaxed line-clamp-4">
+                  {selectedMovie.description || 'No description provided for this title.'}
+                </p>
+              </div>
+            </div>
+
+            {/* Play & Stream Action Buttons */}
+            <div className="space-y-3 pt-3 border-t border-white/10">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold flex items-center gap-1.5">
+                  <Play className="w-3.5 h-3.5 text-sky-400" />
+                  Choose Playback Option
+                </span>
+                {selectedMovie.streamUrl ? (
+                  <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    Ready to Stream
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-amber-400 font-mono">
+                    Stream link pending
+                  </span>
+                )}
+              </div>
+
+              {/* Main Play Action Buttons */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {/* 1. Direct Watch Movie */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleStartMovieParty(selectedMovie);
+                    setSelectedMovie(null);
+                  }}
+                  className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-sky-400 to-indigo-600 hover:from-sky-300 hover:to-indigo-500 text-white font-bold text-sm shadow-xl shadow-sky-500/25 flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all"
+                >
+                  <Play className="w-4 h-4 fill-white" />
+                  <span>Watch Movie Now</span>
+                </button>
+
+                {/* 2. Start Watch Party with Friends */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleStartMovieParty(selectedMovie);
+                    setSelectedMovie(null);
+                  }}
+                  className="w-full py-3 px-4 rounded-2xl bg-indigo-600/30 hover:bg-indigo-600/40 border border-indigo-400/40 text-white font-bold text-sm shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all"
+                >
+                  <Users className="w-4 h-4 text-sky-300" />
+                  <span>Start Watch Party</span>
+                </button>
+              </div>
+
+              {/* Extra Options: Trailer, Direct Download, Edit & Delete */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {selectedMovie.trailerUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setShowMovieTrailerModal(true)}
+                    className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-200 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all"
+                  >
+                    <Film className="w-3.5 h-3.5" />
+                    <span>Watch Trailer</span>
+                  </button>
+                )}
+
+                {selectedMovie.streamUrl && (
+                  <a
+                    href={selectedMovie.streamUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download={selectedMovie.title}
+                    className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-all"
+                  >
+                    <Download className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Download Video</span>
+                  </a>
+                )}
+
+                {canManageItem(selectedMovie) && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingItem(selectedMovie);
+                        setIsUploadModalOpen(true);
+                        setSelectedMovie(null);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 text-indigo-200 text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-all"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                      <span>Edit Video Link</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setItemToDelete(selectedMovie);
+                        setSelectedMovie(null);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-200 text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-all"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                      <span>Delete</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Embedded Movie Trailer Modal */}
+      {showMovieTrailerModal && selectedMovie?.trailerUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-3xl bg-[#0e1424] border border-white/20 rounded-3xl p-4 shadow-2xl relative">
+            <div className="flex items-center justify-between pb-3">
+              <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                <Film className="w-4 h-4 text-rose-400" />
+                <span>{selectedMovie.title} - Official Trailer</span>
+              </h4>
+              <button
+                type="button"
+                onClick={() => setShowMovieTrailerModal(false)}
+                className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="aspect-video w-full rounded-2xl overflow-hidden bg-black shadow-2xl border border-white/15">
+              <iframe
+                src={getEmbedUrl(selectedMovie.trailerUrl)}
+                title={`${selectedMovie.title} Trailer`}
+                className="w-full h-full"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
             </div>
           </div>
         </div>

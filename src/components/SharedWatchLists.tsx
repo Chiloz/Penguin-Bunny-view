@@ -584,7 +584,13 @@ export const SharedWatchLists: React.FC<SharedWatchListsProps> = ({
                     className="relative group transition-all duration-300 rounded-[20px] overflow-hidden border border-white/10 hover:border-white/20 bg-white/[0.04] backdrop-blur-md flex flex-col justify-between"
                   >
                     {/* Poster / Preview */}
-                    <div className="relative h-40 w-full bg-black/40 flex items-center justify-center overflow-hidden">
+                    <div 
+                      onClick={() => {
+                        const roomTitle = isSeries ? `${item.title} (S${seasonNum} E${episodeNum})` : item.title;
+                        onStartRoom(roomTitle);
+                      }}
+                      className="relative h-40 w-full bg-black/40 flex items-center justify-center overflow-hidden cursor-pointer"
+                    >
                       {item.imageUrl ? (
                         <img
                           src={item.imageUrl}
@@ -614,10 +620,18 @@ export const SharedWatchLists: React.FC<SharedWatchListsProps> = ({
                         )}
                       </div>
 
+                      {/* Play badge on poster for mobile */}
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-10 h-10 rounded-full bg-sky-500/80 text-white flex items-center justify-center shadow-lg backdrop-blur-md sm:opacity-0 group-hover:opacity-100 transition-all duration-300 transform group-hover:scale-110">
+                          <Play className="w-4 h-4 fill-white ml-0.5" />
+                        </div>
+                      </div>
+
                       {/* Sync Room Overlay */}
-                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity backdrop-blur-sm">
+                      <div className="hidden sm:flex absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 items-center justify-center transition-opacity backdrop-blur-sm">
                         <button
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             const roomTitle = isSeries ? `${item.title} (S${seasonNum} E${episodeNum})` : item.title;
                             onStartRoom(roomTitle);
                           }}
@@ -716,6 +730,19 @@ export const SharedWatchLists: React.FC<SharedWatchListsProps> = ({
                           </div>
                         )}
                       </div>
+
+                      {/* Direct Sync Room button on card for mobile & desktop */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const roomTitle = isSeries ? `${item.title} (S${seasonNum} E${episodeNum})` : item.title;
+                          onStartRoom(roomTitle);
+                        }}
+                        className="w-full mt-2 py-1.5 px-3 rounded-xl bg-gradient-to-r from-sky-500/80 to-indigo-600/80 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs shadow-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-white" />
+                        <span>Sync Room</span>
+                      </button>
 
                       {/* Interactive Rating Editor inline toggle */}
                       {editingRatingItemId === item.id ? (
