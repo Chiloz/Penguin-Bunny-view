@@ -418,10 +418,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const selectedTheme = THEME_PRESETS.find(t => t.name === themeColor) || THEME_PRESETS[0];
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6 space-y-6 font-sans">
+    <div className="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-6 font-sans pb-[calc(88px+env(safe-area-inset-bottom))] sm:pb-6">
       
       {/* Welcome Bar with user theme gradient glow */}
-      <div className="relative overflow-hidden rounded-[24px] p-5 md:p-6 border border-white/10"
+      <div className="relative overflow-hidden rounded-[22px] sm:rounded-[24px] p-4 md:p-6 border border-white/10"
         style={{
           background: 'rgba(255, 255, 255, 0.04)',
           backdropFilter: 'blur(30px) saturate(180%)',
@@ -440,8 +440,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
         />
 
         <div className="relative flex flex-col md:flex-row items-center justify-between gap-5 z-10">
-          <div className="flex items-center gap-4 text-center md:text-left flex-col md:flex-row">
-            <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center text-3xl shadow-inner border border-white/20 select-none overflow-hidden">
+          <div className="flex items-center gap-3 sm:gap-4 md:text-left flex-row w-full md:w-auto">
+            <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-white/10 flex items-center shrink-0 justify-center text-3xl shadow-inner border border-white/20 select-none overflow-hidden">
               {profilePic && profilePic.startsWith('data:image/') ? (
                 <img src={profilePic} alt={currentUser.name} className="w-full h-full object-cover" />
               ) : (
@@ -449,7 +449,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               )}
             </div>
             <div>
-              <div className="flex items-center gap-2 justify-center md:justify-start">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-xl md:text-2xl font-extrabold font-display text-white tracking-tight">
                   Hi, {formatFriendlyName(currentUser.name)}!
                 </h2>
@@ -467,17 +467,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </button>
                 )}
               </div>
-              <p className="text-xs text-slate-400 mt-0.5 max-w-md font-light">
+              <p className="hidden sm:block text-xs text-slate-400 mt-0.5 max-w-md font-light">
                 Ready to watch films? Synchronize movies locally and sync controls in real-time.
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2 justify-center">
+          <div className="flex gap-2 w-full md:w-auto md:flex-wrap justify-stretch md:justify-center">
             {onOpenWelcome && (
               <button
                 onClick={onOpenWelcome}
-                className="px-3.5 py-2 text-xs font-bold text-amber-200 hover:text-white bg-gradient-to-r from-amber-500/20 via-orange-500/20 to-pink-500/20 hover:from-amber-500/30 hover:to-pink-500/30 border border-amber-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/10 hover:scale-105 active:scale-95"
+                className="hidden md:flex px-3.5 py-2 text-xs font-bold text-amber-200 hover:text-white bg-gradient-to-r from-amber-500/20 via-orange-500/20 to-pink-500/20 hover:from-amber-500/30 hover:to-pink-500/30 border border-amber-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/10 hover:scale-105 active:scale-95"
                 title="View your personalized daily greeting & pop mini fireworks!"
               >
                 <PartyPopper className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
@@ -487,7 +487,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             <button
               onClick={() => setIsInstallModalOpen(true)}
-              className="px-3.5 py-2 text-xs font-bold text-sky-200 hover:text-white bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 border border-sky-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-sky-500/10 hover:scale-105 active:scale-95"
+              className="hidden sm:flex px-3.5 py-2 text-xs font-bold text-sky-200 hover:text-white bg-gradient-to-r from-sky-500/20 to-indigo-500/20 hover:from-sky-500/30 hover:to-indigo-500/30 border border-sky-400/30 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-sky-500/10 hover:scale-105 active:scale-95"
               title="Install Penguin View on Microsoft Edge, Linux Desktop, Windows, Mac, or Mobile"
             >
               <Download className="w-3.5 h-3.5 text-sky-400" />
@@ -496,7 +496,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             <button
               onClick={handleCopyCode}
-              className="px-3.5 py-2 text-xs font-semibold text-slate-200 cursor-pointer liquid-glass-button flex items-center gap-2"
+              className="flex-1 md:flex-none justify-center min-h-[44px] px-3.5 py-2 text-xs font-semibold text-slate-200 cursor-pointer liquid-glass-button flex items-center gap-2"
             >
               {copiedCode ? (
                 <>
@@ -513,17 +513,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             <button
               onClick={handleLogout}
-              className="px-3.5 py-2 text-xs font-semibold text-rose-300 hover:text-white bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[44px] px-3.5 py-2 text-xs font-semibold text-rose-300 hover:text-white bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20 transition-all rounded-xl flex items-center gap-1.5 cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
-              Sign Out
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </div>
       </div>
 
       {/* High-Fidelity Sliding Tab Controls */}
-      <div className="flex items-center justify-center sm:justify-start gap-1.5 bg-white/5 border border-white/5 p-1 rounded-2xl max-w-md">
+      <div className="hidden sm:flex items-center justify-start gap-1.5 bg-white/5 border border-white/5 p-1 rounded-2xl max-w-md">
         <button
           onClick={() => setActiveTab('catalog')}
           className={`flex-1 sm:flex-initial px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
@@ -558,6 +558,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <span>Penguin Settings</span>
         </button>
       </div>
+
+      {/* Phone bottom navigation (thumb zone) */}
+      <nav
+        className="sm:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/10 bg-slate-950/90 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]"
+        aria-label="Main"
+        data-no-ptr
+      >
+        <div className="grid grid-cols-3">
+          {([
+            ['catalog', 'Media Hub', Clapperboard],
+            ['watch', 'Rooms', Tv],
+            ['settings', 'Settings', Settings],
+          ] as const).map(([id, label, Icon]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => { setActiveTab(id); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              aria-current={activeTab === id ? 'page' : undefined}
+              className={`h-16 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-all active:scale-95 ${activeTab === id ? 'text-sky-300' : 'text-slate-400'}`}
+            >
+              <span className={`px-4 py-1 rounded-full transition-all ${activeTab === id ? 'bg-sky-400/15' : ''}`}>
+                <Icon className="w-5 h-5" />
+              </span>
+              {label}
+            </button>
+          ))}
+        </div>
+      </nav>
 
       {/* Conditional Rendering of Tabs */}
       {activeTab === 'catalog' ? (
@@ -1172,7 +1200,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {!isChatOpen && (
         <button
           onClick={() => setIsChatOpen(true)}
-          className="fixed bottom-5 right-5 z-40 px-4 py-3 bg-gradient-to-r from-sky-400 via-indigo-500 to-purple-600 hover:from-sky-300 hover:to-purple-500 text-white font-bold text-xs rounded-2xl shadow-2xl shadow-sky-500/30 border border-white/20 flex items-center gap-2.5 transition-all hover:scale-105 active:scale-95 cursor-pointer animate-bounce-subtle"
+          aria-label="Friend chat and invites"
+          className="fixed bottom-[calc(76px+env(safe-area-inset-bottom))] sm:bottom-5 right-4 sm:right-5 z-40 px-3.5 sm:px-4 py-3 bg-gradient-to-r from-sky-400 via-indigo-500 to-purple-600 hover:from-sky-300 hover:to-purple-500 text-white font-bold text-xs rounded-2xl shadow-2xl shadow-sky-500/30 border border-white/20 flex items-center gap-2.5 transition-all hover:scale-105 active:scale-95 cursor-pointer animate-bounce-subtle"
         >
           <div className="relative">
             <MessageSquare className="w-4 h-4 text-white" />
@@ -1182,7 +1211,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </span>
             )}
           </div>
-          <span className="font-display tracking-tight">Friend Chat & Invites</span>
+          <span className="font-display tracking-tight hidden sm:inline">Friend Chat & Invites</span>
         </button>
       )}
 

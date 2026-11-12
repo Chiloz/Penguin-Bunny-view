@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { Readable } from 'stream';
+import { Readable, Transform, pipeline } from 'stream';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -9,7 +9,21 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+
+// A viewer closing a tab / leaving a movie mid-stream is normal. Never let it take the server down.
+const BENIGN_STREAM_ERRORS = new Set(['ECONNRESET', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED', 'ABORT_ERR']);
+process.on('uncaughtException', (err: any) => {
+  if (err && BENIGN_STREAM_ERRORS.has(err.code)) return;
+  console.error('[uncaughtException]', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason: any) => {
+  if (reason && (BENIGN_STREAM_ERRORS.has(reason.code) || reason.name === 'AbortError')) return;
+  console.error('[unhandledRejection]', reason);
+});
 
 // Setup uploads directory on disk
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
@@ -81,7 +95,8 @@ const chunkUpload = multer({
 
 // API Routes
 app.get('/api/health', (req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ status: 'ok', server: 'penguin-view', timestamp: new Date().toISOString() });
 });
 
 // Guard API chunk upload for non-POST methods to prevent falling through to Vite HTML
@@ -381,125 +396,274 @@ app.get('/api/archive/my-items', async (req: Request, res: Response) => {
   }
 });
 
+const VIDEO_MIME: Record<string, string> = {
+  '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
+  '.ogg': 'video/ogg', '.ogv': 'video/ogg', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
+  '.3gp': 'video/3gpp', '.ts': 'video/mp2t',
+};
+
+type ParsedRange = { start: number; end: number } | 'unsatisfiable' | 'ignore';
+
+/**
+ * Parse a single-range HTTP Range header against a known total size.
+ * Handles "a-b", "a-" and the suffix form "-n" (which the old code turned into NaN and crashed on).
+ * Malformed or multi-range requests are ignored (served as a normal 200), per RFC 9110.
+ */
+function parseRange(header: string | undefined, size: number): ParsedRange {
+  if (!header) return 'ignore';
+  const m = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
+  if (!m || (m[1] === '' && m[2] === '')) return 'ignore';
+  let start: number;
+  let end: number;
+  if (m[1] === '') {
+    const suffix = parseInt(m[2], 10);
+    if (!suffix) return 'unsatisfiable';
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = parseInt(m[1], 10);
+    end = m[2] === '' ? size - 1 : parseInt(m[2], 10);
+  }
+  if (start >= size || start > end) return start >= size ? 'unsatisfiable' : 'ignore';
+  return { start, end: Math.min(end, size - 1) };
+}
+
 // High-performance video streaming endpoint with HTTP 206 Partial Content (Range requests)
 app.get('/api/videos/:filename', (req: Request, res: Response) => {
   const filename = path.basename(req.params.filename);
   const filePath = path.join(UPLOADS_DIR, filename);
 
-  if (!fs.existsSync(filePath)) {
-    res.status(404).send('Video file not found on server');
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+    if (!stat.isFile()) throw new Error('not a file');
+  } catch {
+    res.status(404).setHeader('X-Stream-Error', 'notfound').json({ error: 'Video file not found on server' });
     return;
   }
 
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size;
-  const range = req.headers.range;
+  const size = stat.size;
+  const contentType = VIDEO_MIME[path.extname(filename).toLowerCase()] || 'video/mp4';
+  const etag = `W/"${size}-${Math.floor(stat.mtimeMs)}"`;
+  const common: Record<string, string | number> = {
+    'Accept-Ranges': 'bytes',
+    'Content-Type': contentType,
+    'Cache-Control': 'public, max-age=3600',
+    'Last-Modified': stat.mtime.toUTCString(),
+    'ETag': etag,
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Disposition': 'inline',
+  };
 
-  // Determine mime type
-  const ext = path.extname(filename).toLowerCase();
-  let contentType = 'video/mp4';
-  if (ext === '.webm') contentType = 'video/webm';
-  else if (ext === '.mkv') contentType = 'video/x-matroska';
-  else if (ext === '.ogg') contentType = 'video/ogg';
-  else if (ext === '.mov') contentType = 'video/quicktime';
-  else if (ext === '.avi') contentType = 'video/x-msvideo';
-
-  if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
-    if (start >= fileSize) {
-      res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + fileSize);
-      return;
-    }
-
-    const chunksize = (end - start) + 1;
-    const fileStream = fs.createReadStream(filePath, { start, end });
-    const head = {
-      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-      'Accept-Ranges': 'bytes',
-      'Content-Length': chunksize,
-      'Content-Type': contentType,
-    };
-
-    res.writeHead(206, head);
-    fileStream.pipe(res);
-  } else {
-    const head = {
-      'Content-Length': fileSize,
-      'Content-Type': contentType,
-      'Accept-Ranges': 'bytes'
-    };
-    res.writeHead(200, head);
-    fs.createReadStream(filePath).pipe(res);
+  const rangeHeader = req.headers.range;
+  if (!rangeHeader && req.headers['if-none-match'] === etag) {
+    res.writeHead(304, common);
+    res.end();
+    return;
   }
+
+  const range = size === 0 ? 'ignore' : parseRange(rangeHeader, size);
+  if (range === 'unsatisfiable') {
+    res.writeHead(416, { ...common, 'Content-Range': `bytes */${size}` });
+    res.end();
+    return;
+  }
+
+  const start = range === 'ignore' ? 0 : range.start;
+  const end = range === 'ignore' ? Math.max(size - 1, 0) : range.end;
+
+  if (range === 'ignore') {
+    res.writeHead(200, { ...common, 'Content-Length': size });
+  } else {
+    res.writeHead(206, { ...common, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': end - start + 1 });
+  }
+
+  if (req.method === 'HEAD' || size === 0) {
+    res.end();
+    return;
+  }
+
+  const stream = fs.createReadStream(filePath, { start, end });
+  // pipeline() destroys BOTH sides on any failure, so a viewer leaving never leaks a file descriptor.
+  pipeline(stream, res, (err) => {
+    if (err && !BENIGN_STREAM_ERRORS.has((err as any).code)) {
+      console.error('Video stream error:', err);
+    }
+  });
 });
 
-// High-performance Google Drive streaming proxy with HTTP 206 Partial Content (Range requests)
+const DRIVE_UPSTREAM = (process.env.DRIVE_UPSTREAM_BASE || 'https://drive.usercontent.google.com').replace(/\/$/, '');
+const DRIVE_UPSTREAM_IS_DEFAULT = !process.env.DRIVE_UPSTREAM_BASE;
+const DRIVE_HEADER_TIMEOUT_MS = 20_000;
+
+/** Pass only bytes [start, end] of a stream that ignored our Range request (iOS Safari rejects 200 for ranges). */
+function sliceStream(start: number, end: number): Transform {
+  let offset = 0;
+  return new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      const chunkStart = offset;
+      const chunkEnd = offset + chunk.length - 1;
+      offset += chunk.length;
+      if (chunkEnd < start) return cb();
+      const from = Math.max(0, start - chunkStart);
+      const to = Math.min(chunk.length - 1, end - chunkStart);
+      if (to >= from) this.push(chunk.subarray(from, to + 1));
+      if (chunkEnd >= end) this.push(null);
+      cb();
+    },
+  });
+}
+
+/** Drive answers quota/permission problems with a 200 + HTML page. Read a little of it and say what it is. */
+async function classifyDriveHtml(r: globalThis.Response): Promise<'quota' | 'private' | 'html'> {
+  try {
+    const reader = r.body?.getReader();
+    if (!reader) return 'html';
+    let text = '';
+    while (text.length < 65536) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      text += Buffer.from(value).toString('utf8');
+    }
+    reader.cancel().catch(() => {});
+    const t = text.toLowerCase();
+    if (t.includes('too many users') || t.includes('quota exceeded') || t.includes('download quota')) return 'quota';
+    if (t.includes('accounts.google.com') || t.includes('sign in') || t.includes('request access') || t.includes('you need access')) return 'private';
+  } catch { /* fall through */ }
+  return 'html';
+}
+
+// Google Drive streaming proxy with HTTP 206 Partial Content (Range requests).
+// Key behaviours: aborts the upstream download the moment the viewer disconnects (so leaving a movie
+// frees Google's per-file connection limit for the next one), never forwards HTML as if it were video,
+// and answers Range requests with a real 206 even when Drive ignores the Range header.
 app.get('/api/drive/stream', async (req: Request, res: Response) => {
   const fileId = req.query.id as string;
-  if (!fileId) {
-    res.status(400).send('Missing Google Drive file ID parameter (?id=...)');
+  const cleanId = (fileId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!cleanId) {
+    res.status(400).setHeader('X-Stream-Error', 'badid').json({ error: 'Missing or invalid Google Drive file ID (?id=...)' });
     return;
   }
 
-  // Sanitize file ID
-  const cleanId = fileId.replace(/[^a-zA-Z0-9_-]/g, '');
-  if (!cleanId) {
-    res.status(400).send('Invalid Google Drive file ID');
-    return;
-  }
+  const controller = new AbortController();
+  let clientGone = false;
+  res.on('close', () => {
+    clientGone = true;
+    controller.abort(); // viewer left: drop the upstream download immediately
+  });
+
+  const sendError = (status: number, tag: string, message: string) => {
+    if (res.headersSent) { res.destroy(); return; }
+    res.status(status).setHeader('X-Stream-Error', tag).setHeader('Cache-Control', 'no-store').json({ error: message });
+  };
+
+  const upstreamHeaders: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': '*/*',
+  };
+  if (req.headers.range) upstreamHeaders['Range'] = req.headers.range as string;
+
+  const urls = [`${DRIVE_UPSTREAM}/download?id=${cleanId}&export=download&authuser=0&confirm=t`];
+  if (DRIVE_UPSTREAM_IS_DEFAULT) urls.push(`https://drive.google.com/uc?export=download&id=${cleanId}&confirm=t`);
 
   try {
-    const driveUrl = `https://drive.usercontent.google.com/download?id=${cleanId}&export=download&authuser=0&confirm=t`;
-    
-    // Forward Range header if requested by client HTML5 video element
-    const headers: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': '*/*'
-    };
-    if (req.headers.range) {
-      headers['Range'] = req.headers.range as string;
+    let upstream: globalThis.Response | null = null;
+    let failTag: { status: number; tag: string; message: string } | null = null;
+
+    for (const url of urls) {
+      const headerTimer = setTimeout(() => controller.abort(), DRIVE_HEADER_TIMEOUT_MS);
+      let r: globalThis.Response;
+      try {
+        r = await fetch(url, { method: 'GET', headers: upstreamHeaders, redirect: 'follow', signal: controller.signal });
+      } finally {
+        clearTimeout(headerTimer);
+      }
+      if (clientGone) return;
+
+      const type = (r.headers.get('content-type') || '').toLowerCase();
+      if (r.status === 404) { failTag = { status: 404, tag: 'notfound', message: 'Google Drive file not found.' }; r.body?.cancel().catch(() => {}); continue; }
+      if (r.status === 429) { failTag = { status: 429, tag: 'quota', message: 'Google Drive download quota reached for this file.' }; r.body?.cancel().catch(() => {}); continue; }
+      if (r.status === 401 || r.status === 403) { failTag = { status: 403, tag: 'private', message: 'This Drive file is not shared as "Anyone with the link can view".' }; r.body?.cancel().catch(() => {}); continue; }
+      if (!r.ok && r.status !== 206) { failTag = { status: 502, tag: 'upstream', message: `Google Drive responded with status ${r.status}.` }; r.body?.cancel().catch(() => {}); continue; }
+      if (type.includes('text/html')) {
+        const kind = await classifyDriveHtml(r);
+        failTag = kind === 'quota'
+          ? { status: 429, tag: 'quota', message: 'Google Drive is rate-limiting this file (too many recent downloads).' }
+          : kind === 'private'
+            ? { status: 403, tag: 'private', message: 'This Drive file is not shared as "Anyone with the link can view".' }
+            : { status: 502, tag: 'html', message: 'Google Drive returned a web page instead of the video.' };
+        continue;
+      }
+      upstream = r;
+      break;
     }
 
-    let driveRes = await fetch(driveUrl, {
-      method: 'GET',
-      headers,
-      redirect: 'follow'
-    });
-
-    if (!driveRes.ok && driveRes.status !== 206) {
-      const fallbackUrl = `https://drive.google.com/uc?export=download&id=${cleanId}&confirm=t`;
-      driveRes = await fetch(fallbackUrl, { method: 'GET', headers, redirect: 'follow' });
-    }
-
-    if (!driveRes.ok && driveRes.status !== 206) {
-      res.status(driveRes.status).send(`Failed to stream from Google Drive (Status: ${driveRes.status}). Verify the file is shared as "Anyone with the link can view".`);
+    if (!upstream) {
+      const f = failTag || { status: 502, tag: 'upstream', message: 'Could not reach Google Drive.' };
+      sendError(f.status, f.tag, f.message);
       return;
     }
 
-    res.status(driveRes.status);
-    res.setHeader('Cache-Control', 'no-cache');
+    const upstreamType = (upstream.headers.get('content-type') || '').toLowerCase();
+    // octet-stream / missing types make iOS Safari refuse to play; force a video type unless Drive gave us one.
+    const contentType = upstreamType.startsWith('video/') ? upstreamType : 'video/mp4';
+    const totalHeader = upstream.headers.get('content-length');
+    const upstreamLen = totalHeader ? parseInt(totalHeader, 10) : NaN;
+
+    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Accept-Ranges', 'bytes');
-    ['content-range', 'content-length', 'content-type'].forEach(header => {
-      const val = driveRes.headers.get(header);
-      if (val) res.setHeader(header, val);
-    });
-    if (!res.getHeader('content-type')) {
-      res.setHeader('content-type', 'video/mp4');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    let body: Readable | null = null;
+    if (upstream.body) {
+      body = Readable.fromWeb(upstream.body as any);
     }
 
-    if (driveRes.body) {
-      // @ts-ignore
-      const nodeStream = Readable.fromWeb(driveRes.body as any);
-      nodeStream.pipe(res);
-    } else {
-      res.end();
+    if (req.method === 'HEAD' || !body) {
+      if (upstream.headers.get('content-range')) res.setHeader('Content-Range', upstream.headers.get('content-range')!);
+      if (totalHeader) res.setHeader('Content-Length', totalHeader);
+      res.status(upstream.status).end();
+      controller.abort();
+      return;
     }
+
+    const wantedRange = req.headers.range as string | undefined;
+    if (upstream.status === 200 && wantedRange && isFinite(upstreamLen) && upstreamLen > 0) {
+      // Drive ignored Range. Emulate a proper 206 so Safari / strict players accept the stream.
+      const parsed = parseRange(wantedRange, upstreamLen);
+      if (parsed === 'unsatisfiable') {
+        res.status(416).setHeader('Content-Range', `bytes */${upstreamLen}`).end();
+        controller.abort();
+        return;
+      }
+      if (parsed !== 'ignore') {
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${parsed.start}-${parsed.end}/${upstreamLen}`);
+        res.setHeader('Content-Length', parsed.end - parsed.start + 1);
+        pipeline(body, sliceStream(parsed.start, parsed.end), res, (err) => {
+          controller.abort();
+          if (err && !BENIGN_STREAM_ERRORS.has((err as any).code) && !clientGone) console.error('Drive slice stream error:', err);
+        });
+        return;
+      }
+    }
+
+    res.status(upstream.status);
+    const range = upstream.headers.get('content-range');
+    if (range) res.setHeader('Content-Range', range);
+    if (totalHeader) res.setHeader('Content-Length', totalHeader);
+    pipeline(body, res, (err) => {
+      controller.abort();
+      if (err && !BENIGN_STREAM_ERRORS.has((err as any).code) && !clientGone) console.error('Drive stream error:', err);
+    });
   } catch (err: any) {
+    if (clientGone || err?.name === 'AbortError') {
+      if (!clientGone) sendError(504, 'timeout', 'Google Drive took too long to respond.');
+      return;
+    }
     console.error('Google Drive stream error:', err);
-    res.status(500).send('Error streaming Google Drive video: ' + err.message);
+    sendError(502, 'upstream', 'Error streaming Google Drive video: ' + (err?.message || 'unknown'));
   }
 });
 
@@ -799,8 +963,19 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    // Hashed build assets never change -> cache hard. index.html must ALWAYS revalidate, otherwise phones
+    // keep an old shell pointing at JS files that no longer exist after a deploy (blank screen / errors).
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (/[\\/]assets[\\/]/.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }));
     app.get('*', (req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

@@ -318,7 +318,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
       )}
 
       {/* Top Banner & Action Controls */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-sky-950/40 via-indigo-950/40 to-[#0e1424]/60 p-5 sm:p-6 rounded-3xl border border-white/10 backdrop-blur-md shadow-xl">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 bg-gradient-to-r from-sky-950/40 via-indigo-950/40 to-[#0e1424]/60 p-4 sm:p-6 rounded-3xl border border-white/10 backdrop-blur-md shadow-xl">
         <div className="space-y-1 text-left">
           <div className="flex items-center gap-2">
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold tracking-wider uppercase bg-sky-500/20 text-sky-300 border border-sky-400/30 flex items-center gap-1.5">
@@ -339,7 +339,7 @@ export const MediaCatalog: React.FC<MediaCatalogProps> = ({
           <h2 className="text-xl sm:text-2xl font-bold text-white font-display">
             Movies, TV Series & Anime Hub
           </h2>
-          <p className="text-xs text-slate-400 max-w-xl">
+          <p className="hidden sm:block text-xs text-slate-400 max-w-xl">
             Stream directly in exact millisecond sync with your friends, or choose the Data Saver mode to sync using your local downloaded copies.
           </p>
         </div>

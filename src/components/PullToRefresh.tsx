@@ -4,9 +4,11 @@ import { RefreshCw, ArrowDown } from 'lucide-react';
 interface PullToRefreshProps {
   children: React.ReactNode;
   onRefresh?: () => Promise<void> | void;
+  /** Turn the gesture off (e.g. inside the video player where drags are seek/scrub gestures). */
+  disabled?: boolean;
 }
 
-export const PullToRefresh: React.FC<PullToRefreshProps> = ({ children, onRefresh }) => {
+export const PullToRefresh: React.FC<PullToRefreshProps> = ({ children, onRefresh, disabled = false }) => {
   const [pullDistance, setPullDistance] = useState<number>(0);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const startYRef = useRef<number | null>(null);
@@ -16,6 +18,13 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({ children, onRefres
 
   useEffect(() => {
     const handleTouchStart = (e: TouchEvent) => {
+      // Never hijack drags that start on the player, a slider or any scrollable panel.
+      const t = e.target as HTMLElement | null;
+      if (disabled || t?.closest?.('[data-no-ptr], input[type="range"], video, [role="slider"]')) {
+        startYRef.current = null;
+        isDraggingRef.current = false;
+        return;
+      }
       // Only enable pull-to-refresh if page is at the very top
       if (window.scrollY <= 5 && !isRefreshing) {
         startYRef.current = e.touches[0].clientY;
@@ -88,7 +97,7 @@ export const PullToRefresh: React.FC<PullToRefreshProps> = ({ children, onRefres
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleTouchEnd);
     };
-  }, [pullDistance, isRefreshing, onRefresh]);
+  }, [pullDistance, isRefreshing, onRefresh, disabled]);
 
   const isTriggerable = pullDistance >= PULL_THRESHOLD;
 

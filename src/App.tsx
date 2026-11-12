@@ -26,6 +26,12 @@ export default function App() {
 
   // Welcome Pop-up State
   const [isWelcomeOpen, setIsWelcomeOpen] = useState<boolean>(false);
+  const [updateReady, setUpdateReady] = useState<boolean>(() => !!(window as any).__PV_UPDATE_READY__);
+  useEffect(() => {
+    const on = () => setUpdateReady(true);
+    window.addEventListener('pv-update-ready', on);
+    return () => window.removeEventListener('pv-update-ready', on);
+  }, []);
 
   // 1. Listen to Firebase Authentication state change
   useEffect(() => {
@@ -151,6 +157,9 @@ export default function App() {
     if (mediaItem?.id) {
       roomPayload.mediaId = mediaItem.id;
     }
+    if (seasonNumber) {
+      roomPayload.seasonNumber = seasonNumber;
+    }
     if (episode?.title) {
       roomPayload.currentEpisodeName = displayName;
       roomPayload.currentEpisodeIndex = (episode.episodeNumber || 1) - 1;
@@ -162,7 +171,7 @@ export default function App() {
       
       // Update URL search parameters to allow sharing
       const newUrl = `${window.location.origin}/?room=${randomId}`;
-      window.history.pushState({ path: newUrl }, '', newUrl);
+      window.history.pushState({ pvRoom: true, path: newUrl }, '', newUrl);
       
       setActiveRoomId(randomId);
     } catch (fsErr) {
@@ -175,16 +184,33 @@ export default function App() {
     const cleanId = roomId.trim();
     setActiveRoomId(cleanId);
     const newUrl = `${window.location.origin}/?room=${cleanId}`;
-    window.history.pushState({ path: newUrl }, '', newUrl);
+    window.history.pushState({ pvRoom: true, path: newUrl }, '', newUrl);
   };
 
   const handleLeaveRoom = () => {
-    // Clear room state and URL query parameter
-    setActiveRoomId(null);
     sessionStorage.removeItem('pendingRoomId');
-    const cleanUrl = window.location.origin + window.location.pathname;
-    window.history.pushState({ path: cleanUrl }, '', cleanUrl);
+    if (window.history.state && window.history.state.pvRoom) {
+      // We pushed this room entry ourselves: going back keeps the history stack tidy, and the popstate
+      // listener below does the actual state change.
+      window.history.back();
+    } else {
+      // Opened straight from an invite link: there is no earlier entry of ours to return to.
+      const cleanUrl = window.location.origin + window.location.pathname;
+      window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+      setActiveRoomId(null);
+    }
   };
+
+  // The phone's Back button / swipe-back gesture must leave the room (and the movie), not the app.
+  useEffect(() => {
+    const onPop = () => {
+      const room = new URLSearchParams(window.location.search).get('room');
+      setActiveRoomId(room ? room.trim() : null);
+      if (!room) sessionStorage.removeItem('pendingRoomId');
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // Set standard body backdrop glows based on user theme choice
   const getThemeBackgroundClass = () => {
@@ -222,7 +248,7 @@ export default function App() {
 
   return (
     <UploadProvider>
-      <PullToRefresh>
+      <PullToRefresh disabled={!!activeRoomId}>
         <div className={`min-h-screen bg-[#060911] relative overflow-x-hidden transition-colors duration-500 ${getThemeBackgroundClass()}`}>
           
           {/* Real-time In-App Push Notification Alert Banner */}
@@ -261,7 +287,7 @@ export default function App() {
         />
         
         {!activeRoomId && (
-          <header className="relative z-20 border-b border-white/5 py-4 px-6"
+          <header className="relative z-20 border-b border-white/5 py-2.5 sm:py-4 px-3 sm:px-6 pt-[max(env(safe-area-inset-top),10px)]"
             style={{
               background: 'rgba(255, 255, 255, 0.02)',
               backdropFilter: 'blur(20px)',
@@ -271,21 +297,21 @@ export default function App() {
             <div className="max-w-6xl mx-auto flex items-center justify-between">
               <div 
                 onClick={handleLeaveRoom}
-                className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition-opacity"
+                className="flex items-center gap-2 sm:gap-2.5 cursor-pointer hover:opacity-90 transition-opacity shrink-0"
               >
-                <span className="text-2xl animate-pulse">🐧</span>
+                <span className="text-xl sm:text-2xl animate-pulse">🐧</span>
                 <div>
-                  <h1 className="text-lg font-extrabold font-display tracking-tight text-white">
+                  <h1 className="text-base sm:text-lg font-extrabold font-display tracking-tight text-white whitespace-nowrap">
                     Penguin View
                   </h1>
-                  <p className="text-[9px] text-slate-400 uppercase tracking-widest font-semibold font-mono">
+                  <p className="hidden sm:block text-[9px] text-slate-400 uppercase tracking-widest font-semibold font-mono">
                     Video Sync Engine
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <PWAInstallButton />
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="hidden sm:block"><PWAInstallButton /></span>
                 <button 
                   onClick={() => setIsWelcomeOpen(true)}
                   className="text-xs text-slate-300 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-400/40 px-3 py-1.5 rounded-full flex items-center gap-2 backdrop-blur-md cursor-pointer transition-all hover:scale-105"
@@ -297,7 +323,7 @@ export default function App() {
                     <span className="text-sm">{profile.profilePic || '🐧'}</span>
                   )}
                   <span className="w-1.5 h-1.5 bg-sky-400 rounded-full animate-pulse" />
-                  <span>{profile.name}</span>
+                  <span className="truncate max-w-[110px] sm:max-w-none">{profile.name}</span>
                   <span className="text-[10px] text-amber-300 font-medium">🎆</span>
                 </button>
               </div>
@@ -305,7 +331,7 @@ export default function App() {
           </header>
         )}
 
-        <main className={`relative min-h-[80vh] ${activeRoomId ? 'py-2 px-0 sm:py-6 sm:px-4' : 'py-6 px-4'}`}>
+        <main className={`relative min-h-[80vh] ${activeRoomId ? 'py-2 px-0 sm:py-6 sm:px-4' : 'py-2 px-0 sm:py-6 sm:px-4'}`}>
           {activeRoomId ? (
             <VideoPlayer 
               roomId={activeRoomId} 
@@ -326,6 +352,17 @@ export default function App() {
           )}
         </main>
       </div>
+      {updateReady && !activeRoomId && (
+        <div className="fixed top-[max(env(safe-area-inset-top),12px)] inset-x-3 z-[60] flex justify-center pointer-events-none">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="pointer-events-auto px-4 min-h-[44px] rounded-full text-xs font-bold text-white bg-gradient-to-r from-sky-500 to-indigo-500 border border-white/20 shadow-2xl active:scale-95 transition-all"
+          >
+            ✨ New version ready. Tap to update
+          </button>
+        </div>
+      )}
     </PullToRefresh>
   </UploadProvider>
   );
