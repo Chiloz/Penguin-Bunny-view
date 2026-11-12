@@ -1,57 +1,39 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { 
-  doc, 
-  setDoc, 
-  updateDoc, 
-  onSnapshot, 
-  collection, 
-  addDoc, 
-  query, 
-  where,
-  orderBy, 
-  limit, 
-  serverTimestamp
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
-import { Room, Reaction, UserProfile, RoomParticipant } from '../types';
-import { LiquidGlassCard } from './LiquidGlassCard';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { collection, doc, getDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { AlertTriangle, ExternalLink, HardDrive, Loader2, Play, RefreshCw, RotateCcw, WifiOff } from 'lucide-react';
+import { db } from '../firebase';
+import { MediaItem, UserProfile } from '../types';
 import { ShareInviteModal } from './ShareInviteModal';
-import { 
-  Play, 
-  Pause, 
-  RotateCcw, 
-  Volume2, 
-  VolumeX, 
-  Maximize, 
-  Minimize, 
-  ChevronLeft, 
-  Share2, 
-  Check, 
-  Users, 
-  Smartphone, 
-  RefreshCw,
-  Video,
-  MessageSquare,
-  Folder,
-  FolderPlus,
-  ListVideo,
-  SkipForward,
-  SkipBack,
-  AlertCircle,
-  AlertTriangle,
-  ExternalLink,
-  Tv,
-  ScreenShare,
-  FolderOpen
-} from 'lucide-react';
+import { BottomSheet } from './player/BottomSheet';
+import { PlayerControls } from './player/PlayerControls';
+import { ActionBar } from './player/ActionBar';
+import { RoomPanel, EpisodeItem } from './player/RoomPanel';
+import { SourceSetup, VIDEO_ACCEPT } from './player/SourceSetup';
+import { formatSeconds, naturalCompare } from './player/format';
+import { useMediaEngine } from '../player/useMediaEngine';
+import { useRoomSync } from '../player/useRoomSync';
+import { driveEmbedUrl, getGoogleDriveId } from '../player/sources';
+import {
+  WakeLockManager,
+  bindMediaSession,
+  canRequestElementFullscreen,
+  containerLikelyUnsupported,
+  exitElementFullscreen,
+  getFullscreenElement,
+  haptic,
+  isIPhone,
+  isMobile,
+  lockLandscape,
+  requestElementFullscreen,
+  supportsVolumeControl,
+  unlockOrientation,
+  updateMediaSessionPosition,
+} from '../player/device';
 import { getLocalVideo, storeLocalVideo } from '../utils/localVideoStorage';
 
-export function formatSeconds(time: number): string {
-  if (isNaN(time) || time < 0) return '0:00';
-  const mins = Math.floor(time / 60);
-  const secs = Math.floor(time % 60);
-  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-}
+// Kept for any older import sites.
+export { formatSeconds } from './player/format';
+export { resolvePlayableStreamUrl, getGoogleDriveId } from '../player/sources';
 
 interface VideoPlayerProps {
   roomId: string;
@@ -61,1661 +43,731 @@ interface VideoPlayerProps {
 
 interface FloatingEmoji {
   id: string;
-  emoji: string;
-  senderName: string;
-  left: number; // horizontal percentage
+  text: string;
+  name: string;
+  left: number;
 }
 
-const QUICK_COMMENTS = [
-  "Wow! 😮",
-  "Nice! 🔥",
-  "What just happened?! 🤯",
-  "I love this! 💕",
-  "What's gonna happen? 🤔",
-  "OMG!! 😱",
-  "🐦🔥 Penguin Fire!",
-  "Peak fiction! 🍿",
-  "Fast forward! ⏩",
-  "Rewind that! ⏪"
-];
+const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.ts', '.3gp'];
+const CONTROLS_HIDE_MS = 3200;
+const MAX_CACHED_FILE_BYTES = 600 * 1024 * 1024; // phones evict/crash on multi-GB IndexedDB writes
 
-export function resolvePlayableStreamUrl(rawUrl: string): string {
-  if (!rawUrl) return '';
-  if (rawUrl.includes('drive.google.com') || rawUrl.includes('docs.google.com')) {
-    const match = rawUrl.match(/(?:file\/d\/|id=)([a-zA-Z0-9_-]{20,})/);
-    if (match) {
-      return `/api/drive/stream?id=${match[1]}`;
-    }
-  }
-  return rawUrl;
-}
+const cleanName = (name: string) => name.replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[._]+/g, ' ').trim();
+const isVideoFile = (f: File) => f.type.startsWith('video/') || VIDEO_EXTENSIONS.some((e) => f.name.toLowerCase().endsWith(e));
+const formatBytes = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1e6))} MB`);
 
-export function getGoogleDriveId(rawUrl: string): string | null {
-  if (!rawUrl) return null;
-  if (rawUrl.includes('drive.google.com') || rawUrl.includes('docs.google.com')) {
-    const match = rawUrl.match(/(?:file\/d\/|id=)([a-zA-Z0-9_-]{20,})/);
-    return match ? match[1] : null;
-  }
-  if (rawUrl.includes('/api/drive/stream')) {
-    const match = rawUrl.match(/id=([a-zA-Z0-9_-]{20,})/);
-    return match ? match[1] : null;
-  }
-  return null;
-}
+export const VideoPlayer: React.FC<VideoPlayerProps> = ({ roomId, currentUser, onLeave }) => {
+  const { engine, state, videoRef } = useMediaEngine();
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const addFilesInput = useRef<HTMLInputElement | null>(null);
 
-export const VideoPlayer: React.FC<VideoPlayerProps> = ({ 
-  roomId, 
-  currentUser, 
-  onLeave 
-}) => {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const isUpdatingFirestore = useRef<boolean>(false);
-  const lastSyncTime = useRef<number>(0);
-  const lastProgrammaticChangeTime = useRef<number>(0);
+  // Source state -------------------------------------------------------------
+  const [mode, setMode] = useState<'none' | 'cloud' | 'local'>('none');
+  const [playlist, setPlaylist] = useState<File[]>([]);
+  const [episodeIdx, setEpisodeIdx] = useState(0);
+  const playlistRef = useRef<File[]>([]);
+  const episodeIdxRef = useRef(0);
+  const loadedCloudUrl = useRef<string | null>(null);
+  const autoStartedRef = useRef(false);
+  const [localNotice, setLocalNotice] = useState('');
 
-  // Video source & Playlist state
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string>('');
-  const [hybridMode, setHybridMode] = useState<'cloud' | 'local'>('cloud');
-  const userOptedLocalRef = useRef<boolean>(false);
-  const [playlistFiles, setPlaylistFiles] = useState<File[]>([]);
-  const [currentEpisodeIndex, setCurrentEpisodeIndex] = useState<number>(0);
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [useIframeFallback, setUseIframeFallback] = useState<boolean>(false);
-  const [streamLoadError, setStreamLoadError] = useState<string>('');
-  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
-  const [lastKnownTime, setLastKnownTime] = useState<number>(0);
+  // UI state -----------------------------------------------------------------
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [scrubbing, setScrubbing] = useState(false);
+  const [pseudoFullscreen, setPseudoFullscreen] = useState(false);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [landscapePhone, setLandscapePhone] = useState(false);
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.innerWidth < 1024);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [floating, setFloating] = useState<FloatingEmoji[]>([]);
+  const [seekFlash, setSeekFlash] = useState<{ side: 'left' | 'right'; key: number } | null>(null);
+  const [friends, setFriends] = useState<UserProfile[]>([]);
+  const [seriesEpisodes, setSeriesEpisodes] = useState<Array<{ title: string; streamUrl: string; number: number }>>([]);
+  const [seriesTitle, setSeriesTitle] = useState('');
 
-  // Sync Room state
-  const [room, setRoom] = useState<Room | null>(null);
-  const [activeMembers, setActiveMembers] = useState<RoomParticipant[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [roomError, setRoomError] = useState<string>('');
+  const fullscreenLike = nativeFullscreen || pseudoFullscreen || landscapePhone;
 
-  // Friends for Share Modal
-  const [friendsProfiles, setFriendsProfiles] = useState<UserProfile[]>([]);
-  const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
-
-  // Player controls state
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [currentTime, setCurrentTime] = useState<number>(0);
-  const [duration, setDuration] = useState<number>(0);
-  const [volume, setVolume] = useState<number>(0.8);
-  const [isMuted, setIsMuted] = useState<boolean>(false);
-  const [isHudVisible, setIsHudVisible] = useState<boolean>(true);
-  const [isCommentsMenuOpen, setIsCommentsMenuOpen] = useState<boolean>(false);
-  
-  // Screen mode: Half Screen vs Container Full View vs True Native Fullscreen (Hides browser tabs)
-  const [isHalfScreen, setIsHalfScreen] = useState<boolean>(true);
-  const [isNativeFullscreen, setIsNativeFullscreen] = useState<boolean>(false);
-  
-  // Floating reactions state
-  const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
-  const [copiedLink, setCopiedLink] = useState<boolean>(false);
-
-  // HUD timer
-  const hudTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Subscribe to friends profiles for sharing
-  useEffect(() => {
-    if (currentUser.friends && currentUser.friends.length > 0) {
-      const q = query(
-        collection(db, 'users'),
-        where('uid', 'in', currentUser.friends)
-      );
-
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const profiles: UserProfile[] = [];
-        snapshot.forEach((docSnap) => {
-          profiles.push(docSnap.data() as UserProfile);
-        });
-        setFriendsProfiles(profiles);
-      }, (err) => {
-        console.error("Error fetching friends profiles in player:", err);
-      });
-
-      return () => unsubscribe();
-    } else {
-      setFriendsProfiles([]);
-    }
-  }, [currentUser.friends]);
-
-  // Native Fullscreen change listener
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      const isFull = !!(
-        document.fullscreenElement || 
-        (document as any).webkitFullscreenElement || 
-        (document as any).mozFullScreenElement || 
-        (document as any).msFullscreenElement
-      );
-      setIsNativeFullscreen(isFull);
-      if (isFull) {
-        setIsHalfScreen(false);
-      }
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
-    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
-
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
-    };
+  // Room sync ----------------------------------------------------------------
+  const showFloating = useCallback((text: string, name: string) => {
+    const id = Math.random().toString(36).slice(2, 9);
+    setFloating((prev) => [...prev.slice(-12), { id, text, name, left: 8 + Math.floor(Math.random() * 78) }]);
+    setTimeout(() => setFloating((prev) => prev.filter((e) => e.id !== id)), 2400);
   }, []);
 
-  // Keyboard shortcut handler
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger if user is typing in an input
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
-        return;
-      }
-
-      if (e.key === 'f' || e.key === 'F') {
-        e.preventDefault();
-        toggleNativeFullscreen();
-      } else if (e.key === ' ' || e.code === 'Space') {
-        e.preventDefault();
-        togglePlayPause();
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        skip(-5);
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        skip(5);
-      } else if (e.key === 'm' || e.key === 'M') {
-        e.preventDefault();
-        toggleMute();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+  const { room, loading, roomError, members, syncWarning, sendReaction, announceEpisode, resync } = useRoomSync({
+    roomId,
+    currentUser,
+    engine,
+    onReaction: showFloating,
   });
 
-  // Toggle true Native Fullscreen API (Hides browser tabs, toolbars, and desktop UI)
-  const toggleNativeFullscreen = async () => {
-    try {
-      const isCurrentlyFullscreen = !!(
-        document.fullscreenElement || 
-        (document as any).webkitFullscreenElement || 
-        (document as any).mozFullScreenElement || 
-        (document as any).msFullscreenElement
-      );
+  const isHost = room?.hostId === currentUser.uid;
+  const isLocalRoom = !!room?.streamUrl?.startsWith('local://');
+  const hasCloud = !!room?.streamUrl && !isLocalRoom;
 
-      if (!isCurrentlyFullscreen) {
-        const elem = containerRef.current || document.documentElement;
-        if (elem.requestFullscreen) {
-          await elem.requestFullscreen();
-        } else if ((elem as any).webkitRequestFullscreen) {
-          await (elem as any).webkitRequestFullscreen();
-        } else if ((elem as any).mozRequestFullScreen) {
-          await (elem as any).mozRequestFullScreen();
-        } else if ((elem as any).msRequestFullscreen) {
-          await (elem as any).msRequestFullscreen();
-        }
-        setIsHalfScreen(false);
-      } else {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        } else if ((document as any).webkitExitFullscreen) {
-          await (document as any).webkitExitFullscreen();
-        } else if ((document as any).mozCancelFullScreen) {
-          await (document as any).mozCancelFullScreen();
-        } else if ((document as any).msExitFullscreen) {
-          await (document as any).msExitFullscreen();
-        }
-      }
-    } catch (err) {
-      console.warn("Fullscreen toggle notice:", err);
-      // Fallback to container full view if permission rejected in certain sandboxes
-      setIsHalfScreen(prev => !prev);
+  // -------------------------------------------------------------------------
+  // Loading sources
+  // -------------------------------------------------------------------------
+  const startCloud = useCallback((url: string, autoplay: boolean) => {
+    loadedCloudUrl.current = url;
+    setMode('cloud');
+    void engine.load(url, { autoplay });
+  }, [engine]);
+
+  const loadLocalEpisode = useCallback((files: File[], index: number, opts: { announce: boolean; autoplay: boolean }) => {
+    const file = files[index];
+    if (!file) return;
+    episodeIdxRef.current = index;
+    setEpisodeIdx(index);
+    setMode('local');
+    setLocalNotice(containerLikelyUnsupported(file.name) || '');
+    engine.loadFile(file, { autoplay: opts.autoplay });
+    if (opts.announce) {
+      void announceEpisode({ videoName: file.name, index, total: files.length, playing: opts.autoplay });
     }
+  }, [engine, announceEpisode]);
+
+  const startLocal = useCallback((rawFiles: File[], announce: boolean) => {
+    const files = rawFiles.filter(isVideoFile).sort((a, b) => naturalCompare(a.name, b.name));
+    if (files.length === 0) {
+      setLocalNotice('That does not look like a video file. Try an MP4.');
+      return;
+    }
+    playlistRef.current = files;
+    setPlaylist(files);
+    loadLocalEpisode(files, 0, { announce, autoplay: true });
+
+    // Cache the first file so a reload is instant. Skip huge files: phones evict or crash on them.
+    const first = files[0];
+    if (first.size <= MAX_CACHED_FILE_BYTES) {
+      setTimeout(() => { storeLocalVideo(first.name, first).catch(() => {}); }, 1500);
+    }
+  }, [loadLocalEpisode]);
+
+  const addFiles = useCallback((raw: File[]) => {
+    const files = raw.filter(isVideoFile);
+    if (!files.length) return;
+    const merged = [...playlistRef.current, ...files].sort((a, b) => naturalCompare(a.name, b.name));
+    playlistRef.current = merged;
+    setPlaylist(merged);
+    if (mode !== 'local') loadLocalEpisode(merged, 0, { announce: isHost, autoplay: true });
+  }, [mode, isHost, loadLocalEpisode]);
+
+  // Host who just created a cloud room is already mid-tap: start straight away. Everyone else chooses.
+  useEffect(() => {
+    if (!room || autoStartedRef.current || mode !== 'none') return;
+    if (hasCloud && isHost) {
+      autoStartedRef.current = true;
+      startCloud(room.streamUrl!, false);
+    } else if (isLocalRoom) {
+      autoStartedRef.current = true;
+      const name = room.streamUrl!.replace('local://', '');
+      getLocalVideo(name)
+        .then((blob) => {
+          if (blob) startLocal([new File([blob], name, { type: blob.type || 'video/mp4' })], false);
+        })
+        .catch(() => {});
+    }
+  }, [room, hasCloud, isHost, isLocalRoom, mode, startCloud, startLocal]);
+
+  // The room moved to a different cloud stream (next episode, host changed the movie).
+  useEffect(() => {
+    if (mode !== 'cloud' || !room?.streamUrl || isLocalRoom) return;
+    if (room.streamUrl !== loadedCloudUrl.current) {
+      startCloud(room.streamUrl, !!room.isPlaying);
+    }
+  }, [room?.streamUrl, mode, isLocalRoom, startCloud, room?.isPlaying]);
+
+  // Someone else moved to another local episode.
+  useEffect(() => {
+    if (mode !== 'local' || room?.currentEpisodeIndex === undefined) return;
+    const idx = room.currentEpisodeIndex;
+    if (room.senderId === currentUser.uid || idx === episodeIdxRef.current) return;
+    if (playlistRef.current[idx]) {
+      loadLocalEpisode(playlistRef.current, idx, { announce: false, autoplay: !!room.isPlaying });
+    } else {
+      setLocalNotice(`The room moved to episode ${idx + 1}. Add that file from the Episodes tab.`);
+    }
+  }, [room?.currentEpisodeIndex, room?.senderId, mode, currentUser.uid, loadLocalEpisode, room?.isPlaying]);
+
+  // Cloud series: fetch the episode list so Next / Previous work without local files.
+  useEffect(() => {
+    if (!room?.mediaId) { setSeriesEpisodes([]); return; }
+    let cancelled = false;
+    getDoc(doc(db, 'media_items', room.mediaId))
+      .then((snap) => {
+        if (cancelled || !snap.exists()) return;
+        const item = snap.data() as MediaItem;
+        const season = item.seasons?.find((s) => s.seasonNumber === room.seasonNumber) || item.seasons?.[0];
+        setSeriesTitle(item.title);
+        setSeriesEpisodes(
+          (season?.episodes || [])
+            .slice()
+            .sort((a, b) => a.episodeNumber - b.episodeNumber)
+            .map((e) => ({ title: e.title, streamUrl: e.streamUrl, number: e.episodeNumber }))
+        );
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [room?.mediaId, room?.seasonNumber]);
+
+  // Friends (for the invite dialog)
+  useEffect(() => {
+    const ids = currentUser.friends || [];
+    if (!ids.length) { setFriends([]); return; }
+    const unsub = onSnapshot(
+      query(collection(db, 'users'), where('uid', 'in', ids.slice(0, 30))),
+      (snap) => setFriends(snap.docs.map((d) => d.data() as UserProfile)),
+      () => {}
+    );
+    return () => unsub();
+  }, [currentUser.friends]);
+
+  // -------------------------------------------------------------------------
+  // Episodes (local playlist wins, otherwise the cloud series)
+  // -------------------------------------------------------------------------
+  const cloudIndex = useMemo(() => {
+    if (!seriesEpisodes.length) return -1;
+    const byUrl = seriesEpisodes.findIndex((e) => e.streamUrl === room?.streamUrl);
+    if (byUrl >= 0) return byUrl;
+    return Math.min(room?.currentEpisodeIndex ?? 0, seriesEpisodes.length - 1);
+  }, [seriesEpisodes, room?.streamUrl, room?.currentEpisodeIndex]);
+
+  const usingPlaylist = mode === 'local' && playlist.length > 0;
+  const episodeItems: EpisodeItem[] = usingPlaylist
+    ? playlist.map((f, i) => ({ index: i, title: cleanName(f.name), subtitle: formatBytes(f.size) }))
+    : mode === 'cloud'
+      ? seriesEpisodes.map((e, i) => ({ index: i, title: e.title, subtitle: `Episode ${e.number}` }))
+      : [];
+  const activeEpisode = usingPlaylist ? episodeIdx : Math.max(cloudIndex, 0);
+  const canPrev = activeEpisode > 0 && episodeItems.length > 1;
+  const canNext = activeEpisode < episodeItems.length - 1;
+
+  const selectEpisode = useCallback((index: number) => {
+    haptic(10);
+    if (usingPlaylist) {
+      loadLocalEpisode(playlistRef.current, index, { announce: true, autoplay: true });
+    } else if (mode === 'cloud' && seriesEpisodes[index]) {
+      const ep = seriesEpisodes[index];
+      void announceEpisode({
+        videoName: `${seriesTitle} - S${room?.seasonNumber || 1}E${ep.number}: ${ep.title}`,
+        index,
+        total: seriesEpisodes.length,
+        playing: true,
+        streamUrl: ep.streamUrl,
+      });
+    }
+  }, [usingPlaylist, mode, seriesEpisodes, seriesTitle, room?.seasonNumber, loadLocalEpisode, announceEpisode]);
+
+  const selectEpisodeRef = useRef(selectEpisode);
+  selectEpisodeRef.current = selectEpisode;
+  const flow = useRef({ activeEpisode, canNext, canPrev });
+  flow.current = { activeEpisode, canNext, canPrev };
+
+  const goNext = useCallback(() => { if (flow.current.canNext) selectEpisodeRef.current(flow.current.activeEpisode + 1); }, []);
+  const goPrev = useCallback(() => { if (flow.current.canPrev) selectEpisodeRef.current(flow.current.activeEpisode - 1); }, []);
+
+  // Auto-advance when an episode ends.
+  useEffect(() => engine.onEnded(() => { if (flow.current.canNext) goNext(); }), [engine, goNext]);
+
+  // -------------------------------------------------------------------------
+  // Controls visibility
+  // -------------------------------------------------------------------------
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sheetOpen = shareOpen || sourceOpen || peopleOpen;
+
+  const showControls = useCallback(() => {
+    setControlsVisible(true);
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
+  }, []);
+
+  useEffect(() => {
+    const keepOpen = !state.playing || scrubbing || sheetOpen || state.status !== 'ready' || state.needsGesture;
+    if (keepOpen) {
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+      setControlsVisible(true);
+    } else {
+      showControls();
+    }
+    return () => { if (hideTimer.current) clearTimeout(hideTimer.current); };
+  }, [state.playing, scrubbing, sheetOpen, state.status, state.needsGesture, showControls]);
+
+  // -------------------------------------------------------------------------
+  // Stage taps: tap = toggle controls, double-tap sides = +/-10s, double-tap centre = play/pause
+  // -------------------------------------------------------------------------
+  const lastTap = useRef(0);
+  const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashKey = useRef(0);
+
+  const onStageClick = (e: React.MouseEvent) => {
+    const stage = stageRef.current;
+    if (!stage || state.status === 'error' || state.activeKind === 'embed') return;
+    const pointerType = (e.nativeEvent as PointerEvent).pointerType;
+    const mouse = pointerType ? pointerType === 'mouse' : !isMobile;
+
+    if (mouse) {
+      engine.toggle();
+      showControls();
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastTap.current < 300) {
+      if (tapTimer.current) clearTimeout(tapTimer.current);
+      lastTap.current = 0;
+      const r = stage.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width;
+      if (x < 0.34) { engine.skip(-10); setSeekFlash({ side: 'left', key: ++flashKey.current }); }
+      else if (x > 0.66) { engine.skip(10); setSeekFlash({ side: 'right', key: ++flashKey.current }); }
+      else engine.toggle();
+      haptic(10);
+      setControlsVisible(true);
+      return;
+    }
+    lastTap.current = now;
+    tapTimer.current = setTimeout(() => {
+      setControlsVisible((v) => {
+        if (!v) { showControls(); return true; }
+        if (hideTimer.current) clearTimeout(hideTimer.current);
+        return false;
+      });
+    }, 260);
   };
 
-  // Clean up object URLs on unmount or URL change to prevent browser leaks
   useEffect(() => {
-    return () => {
-      if (videoUrl && videoUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(videoUrl);
-      }
-    };
-  }, [videoUrl]);
+    if (!seekFlash) return;
+    const t = setTimeout(() => setSeekFlash(null), 650);
+    return () => clearTimeout(t);
+  }, [seekFlash]);
 
-  // Presence heartbeat: keep current user active in room participants
+  useEffect(() => () => { if (tapTimer.current) clearTimeout(tapTimer.current); }, []);
+
+  // -------------------------------------------------------------------------
+  // Fullscreen (native where it exists, CSS "theatre" on iPhone)
+  // -------------------------------------------------------------------------
   useEffect(() => {
-    if (!roomId || !currentUser) return;
-
-    const participantRef = doc(db, `rooms/${roomId}/participants`, currentUser.uid);
-    const writePresence = () => {
-      setDoc(participantRef, {
-        uid: currentUser.uid,
-        name: currentUser.name,
-        profilePic: currentUser.profilePic || '🐧',
-        themeColor: currentUser.themeColor || 'sky',
-        lastSeen: serverTimestamp()
-      }, { merge: true }).catch(err => console.error("Presence update error:", err));
+    const sync = () => {
+      const on = !!getFullscreenElement();
+      setNativeFullscreen(on);
+      if (!on) unlockOrientation();
     };
+    const evts = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
+    evts.forEach((n) => document.addEventListener(n, sync));
+    return () => evts.forEach((n) => document.removeEventListener(n, sync));
+  }, []);
 
-    writePresence();
-    const heartbeat = setInterval(writePresence, 10000);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(orientation: landscape) and (max-height: 520px)');
+    const update = () => setLandscapePhone(mq.matches && isMobile);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
 
-    // Subscribe to active participants in this room
-    const participantsCol = collection(db, `rooms/${roomId}/participants`);
-    const unsubscribe = onSnapshot(participantsCol, (snapshot) => {
-      const active: RoomParticipant[] = [];
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(max-width: 1023px)');
+    const update = () => setNarrow(mq.matches);
+    update();
+    mq.addEventListener?.('change', update);
+    return () => mq.removeEventListener?.('change', update);
+  }, []);
+
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    if (getFullscreenElement()) { await exitElementFullscreen(); return; }
+    if (pseudoFullscreen) { setPseudoFullscreen(false); return; }
+    const el = stageRef.current;
+    if (!isIPhone && el && canRequestElementFullscreen(el) && (await requestElementFullscreen(el))) {
+      if (isMobile) void lockLandscape();
+      return;
+    }
+    setPseudoFullscreen(true);
+  }, [pseudoFullscreen]);
+
+  useEffect(() => () => {
+    if (getFullscreenElement()) void exitElementFullscreen();
+    unlockOrientation();
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Phone integrations: wake lock + lock-screen controls
+  // -------------------------------------------------------------------------
+  const wakeLock = useRef<WakeLockManager | null>(null);
+  useEffect(() => {
+    wakeLock.current = new WakeLockManager();
+    return () => { wakeLock.current?.destroy(); wakeLock.current = null; };
+  }, []);
+  useEffect(() => {
+    if (state.playing) void wakeLock.current?.request();
+    else void wakeLock.current?.release();
+  }, [state.playing]);
+
+  const title = room?.currentEpisodeName || room?.videoName || 'Penguin View';
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    const unbind = bindMediaSession(title, room?.hostName ? `Hosted by ${room.hostName}` : 'Penguin View', {
+      play: () => void engine.play('user'),
+      pause: () => engine.pause('user'),
+      seekTo: (t) => engine.seek(t, 'user'),
+      seekBy: (d) => engine.skip(d),
+      next: canNext ? goNext : undefined,
+      previous: canPrev ? goPrev : undefined,
+    });
+    let last = 0;
+    const off = engine.subscribeTime(() => {
       const now = Date.now();
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data() as RoomParticipant;
-        let lastSeenMs = now;
-        if (data.lastSeen) {
-          lastSeenMs = data.lastSeen.toMillis ? data.lastSeen.toMillis() : new Date(data.lastSeen).getTime();
-        }
-        if (now - lastSeenMs < 35000) {
-          active.push(data);
-        }
-      });
-      setActiveMembers(active);
-    }, (err) => {
-      console.error("Participants listener error:", err);
+      if (now - last < 1000) return;
+      last = now;
+      const t = engine.getTime();
+      updateMediaSessionPosition(t.currentTime, t.duration, 1);
     });
+    return () => { unbind(); off(); };
+  }, [engine, state.status, state.sourceId, title, room?.hostName, canNext, canPrev, goNext, goPrev]);
 
-    return () => {
-      clearInterval(heartbeat);
-      unsubscribe();
+  // -------------------------------------------------------------------------
+  // Keyboard (desktop / tablets with keyboards)
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      if ((e.key === ' ' || e.key === 'Enter') && (tag === 'BUTTON' || el?.getAttribute('role') === 'slider')) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      switch (e.key) {
+        case ' ': case 'k': case 'K': e.preventDefault(); engine.toggle(); break;
+        case 'ArrowLeft': e.preventDefault(); engine.skip(-5); break;
+        case 'ArrowRight': e.preventDefault(); engine.skip(5); break;
+        case 'j': case 'J': engine.skip(-10); break;
+        case 'l': case 'L': engine.skip(10); break;
+        case 'ArrowUp': e.preventDefault(); engine.setVolume(engine.getState().volume + 0.05); break;
+        case 'ArrowDown': e.preventDefault(); engine.setVolume(engine.getState().volume - 0.05); break;
+        case 'm': case 'M': engine.setMuted(!engine.getState().muted); break;
+        case 'f': case 'F': void toggleFullscreen(); break;
+        case 'n': case 'N': goNext(); break;
+        case 'p': case 'P': goPrev(); break;
+        default: return;
+      }
+      showControls();
     };
-  }, [roomId, currentUser]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [engine, toggleFullscreen, goNext, goPrev, showControls]);
 
-  // 1. Listen for room synchronization updates in real-time
-  useEffect(() => {
-    setLoading(true);
-    const roomRef = doc(db, 'rooms', roomId);
-
-    const unsubscribe = onSnapshot(roomRef, (docSnap) => {
-      if (!docSnap.exists()) {
-        setRoomError("Room does not exist or was closed by the host.");
-        setLoading(false);
-        return;
-      }
-
-      const roomData = docSnap.data() as Room;
-      setRoom(roomData);
-      setLoading(false);
-
-      // Auto-load cloud stream URL if present and user has not switched to local file mode
-      if (roomData.streamUrl && !videoFile && !userOptedLocalRef.current) {
-        if (!roomData.streamUrl.startsWith('local://')) {
-          const playableUrl = resolvePlayableStreamUrl(roomData.streamUrl);
-          setVideoUrl(prev => {
-            if (!prev || (prev !== playableUrl && !prev.startsWith('blob:'))) {
-              return playableUrl;
-            }
-            return prev;
-          });
-          setHybridMode('cloud');
-        } else {
-          setHybridMode('local');
-          const localName = roomData.streamUrl.replace('local://', '');
-          getLocalVideo(localName).then(cachedBlob => {
-            if (cachedBlob && !userOptedLocalRef.current) {
-              const fileObj = new File([cachedBlob], localName, { type: cachedBlob.type || 'video/mp4' });
-              processSelectedFiles([fileObj]);
-            }
-          }).catch(() => {});
-        }
-      }
-
-      // Episode switch synchronization
-      if (
-        roomData.currentEpisodeIndex !== undefined && 
-        roomData.currentEpisodeIndex !== currentEpisodeIndex
-      ) {
-        setCurrentEpisodeIndex(roomData.currentEpisodeIndex);
-        if (playlistFiles[roomData.currentEpisodeIndex]) {
-          loadSelectedEpisodeFile(playlistFiles[roomData.currentEpisodeIndex], roomData.currentEpisodeIndex, false);
-        }
-      }
-
-      const video = videoRef.current;
-      if (!video) return;
-
-      // Calculate state changes and perform video syncing
-      if (isUpdatingFirestore.current) {
-        // This change was originated by this client. Clear lock.
-        isUpdatingFirestore.current = false;
-        return;
-      }
-
-      // Check play/pause state synchronization
-      if (roomData.isPlaying) {
-        if (video.paused) {
-          lastProgrammaticChangeTime.current = Date.now();
-          video.play().catch(e => console.log("Playback start deferred: ", e));
-          setIsPlaying(true);
-        }
-      } else {
-        if (!video.paused) {
-          lastProgrammaticChangeTime.current = Date.now();
-          video.pause();
-          setIsPlaying(false);
-        }
-      }
-
-      // Sync playback timeline seeking
-      let targetTime = roomData.currentTime;
-      
-      // Calculate elapsed time since the sender's actual action to offset latency
-      if (roomData.isPlaying && roomData.lastUpdatedAt) {
-        let updateMs = 0;
-        if (roomData.lastUpdatedAt.toMillis) {
-          updateMs = roomData.lastUpdatedAt.toMillis();
-        } else if (roomData.lastUpdatedAt instanceof Date) {
-          updateMs = roomData.lastUpdatedAt.getTime();
-        } else {
-          updateMs = new Date(roomData.lastUpdatedAt).getTime();
-        }
-
-        const latencySeconds = (Date.now() - updateMs) / 1000;
-        // Ignore crazy offsets to prevent buffer starvation loops
-        if (latencySeconds > 0 && latencySeconds < 15) {
-          targetTime += latencySeconds;
-        }
-      }
-
-      // Sync if drift is larger than 1.5 seconds
-      const drift = Math.abs(video.currentTime - targetTime);
-      if (drift > 1.5) {
-        lastProgrammaticChangeTime.current = Date.now();
-        video.currentTime = targetTime;
-        setCurrentTime(targetTime);
-      }
-    }, (err) => {
-      console.error(err);
-      handleFirestoreError(err, OperationType.GET, `rooms/${roomId}`);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [roomId, currentEpisodeIndex, playlistFiles]);
-
-  // 2. Listen for Floating Reactions
-  useEffect(() => {
-    const reactionsCol = collection(db, `rooms/${roomId}/reactions`);
-    const q = query(reactionsCol, orderBy('timestamp', 'desc'), limit(15));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const reactionData = change.doc.data() as Reaction;
-          
-          // Only show reactions created in the last 6 seconds (to avoid backlog spam)
-          let reactionTime = Date.now();
-          if (reactionData.timestamp) {
-            reactionTime = reactionData.timestamp.toMillis 
-              ? reactionData.timestamp.toMillis() 
-              : new Date(reactionData.timestamp).getTime();
-          }
-
-          if (Date.now() - reactionTime < 6000) {
-            triggerFloatingEmoji(reactionData.emoji, reactionData.senderName);
-          }
-        }
-      });
-    }, (err) => {
-      console.error(err);
-    });
-
-    return () => unsubscribe();
-  }, [roomId]);
-
-  // Show HUD controls on mouse move / tap, auto-hide after 3.5 seconds
-  const handleUserActivity = () => {
-    setIsHudVisible(true);
-    if (hudTimeoutRef.current) clearTimeout(hudTimeoutRef.current);
-    hudTimeoutRef.current = setTimeout(() => {
-      if (isPlaying) {
-        setIsHudVisible(false);
-      }
-    }, 3500);
-  };
-
-  useEffect(() => {
-    handleUserActivity();
-    return () => {
-      if (hudTimeoutRef.current) clearTimeout(hudTimeoutRef.current);
-    };
-  }, [isPlaying]);
-
-  // Helper: Process multiple files or folder inputs
-  const processSelectedFiles = (rawFiles: FileList | File[]) => {
-    const fileArray = Array.from(rawFiles);
-    // Filter for video files or files with video extensions
-    const videoFiles = fileArray.filter(file => {
-      const isVideoType = file.type.startsWith('video/');
-      const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
-      const isVideoExt = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.ts', '.3gp'].includes(ext);
-      return isVideoType || isVideoExt;
-    });
-
-    if (videoFiles.length === 0) return;
-
-    // Cache the primary file in IndexedDB for seamless reload
-    try {
-      storeLocalVideo(videoFiles[0].name, videoFiles[0]).catch(() => {});
-    } catch {}
-
-    // Natural alphanumeric sorting (Episode 1, Episode 2, Episode 10...)
-    videoFiles.sort((a, b) => a.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: 'base' }));
-
-    userOptedLocalRef.current = true;
-    setHybridMode('local');
-    setPlaylistFiles(videoFiles);
-    loadSelectedEpisodeFile(videoFiles[0], 0, true, videoFiles.length);
-  };
-
-  // Switch video file by episode index
-  const loadSelectedEpisodeFile = async (
-    file: File, 
-    index: number, 
-    syncRoom: boolean = true, 
-    totalCount?: number
-  ) => {
-    if (videoUrl && videoUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(videoUrl);
-    }
-
-    setVideoFile(file);
-    setCurrentEpisodeIndex(index);
-    const newUrl = URL.createObjectURL(file);
-    setVideoUrl(newUrl);
-
-    if (syncRoom) {
-      const roomRef = doc(db, 'rooms', roomId);
-      try {
-        await updateDoc(roomRef, {
-          videoName: file.name,
-          currentEpisodeIndex: index,
-          currentEpisodeName: file.name,
-          totalEpisodesCount: totalCount !== undefined ? totalCount : (playlistFiles.length || 1),
-          currentTime: 0,
-          isPlaying: true,
-          lastUpdatedAt: serverTimestamp(),
-          senderId: currentUser.uid
-        });
-      } catch (err) {
-        console.error("Failed to sync episode switch:", err);
-      }
-    }
-  };
-
-  // Handle single or multiple file input change
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      processSelectedFiles(e.target.files);
-    }
-  };
-
-  // Reconnect and resume stream with cache-busting and automatic seek to last known position
-  const handleReconnectStream = () => {
-    setIsReconnecting(true);
-    setStreamLoadError('');
-    const timeToResume = lastKnownTime > 0 ? lastKnownTime : currentTime;
-
-    const baseStreamUrl = room?.streamUrl ? resolvePlayableStreamUrl(room.streamUrl) : videoUrl;
-    if (!baseStreamUrl) {
-      setIsReconnecting(false);
-      return;
-    }
-
-    const cleanBase = baseStreamUrl.replace(/([?&])_recon=[^&]+/g, '');
-    const separator = cleanBase.includes('?') ? '&' : '?';
-    const freshUrl = `${cleanBase}${separator}_recon=${Date.now()}`;
-
-    setVideoUrl(freshUrl);
-
-    setTimeout(() => {
-      const video = videoRef.current;
-      if (video) {
-        video.load();
-        const onLoaded = () => {
-          if (video && timeToResume > 0) {
-            video.currentTime = timeToResume;
-            setCurrentTime(timeToResume);
-            if (room?.isPlaying) {
-              video.play().catch(() => {});
-            }
-          }
-          setIsReconnecting(false);
-          video.removeEventListener('loadedmetadata', onLoaded);
-        };
-        video.addEventListener('loadedmetadata', onLoaded);
-      } else {
-        setIsReconnecting(false);
-      }
-    }, 250);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      processSelectedFiles(e.dataTransfer.files);
-    }
-  };
-
-  // Next / Prev Episode Trigger
-  const handleNextEpisode = () => {
-    if (playlistFiles.length > 0) {
-      const nextIndex = currentEpisodeIndex + 1;
-      if (nextIndex < playlistFiles.length) {
-        loadSelectedEpisodeFile(playlistFiles[nextIndex], nextIndex, true);
-      }
-    } else {
-      // Sync room state to next episode index even if local files aren't loaded yet
-      const nextIndex = (room?.currentEpisodeIndex || 0) + 1;
-      const roomRef = doc(db, 'rooms', roomId);
-      updateDoc(roomRef, {
-        currentEpisodeIndex: nextIndex,
-        currentEpisodeName: `Episode ${nextIndex + 1}`,
-        lastUpdatedAt: serverTimestamp(),
-        senderId: currentUser.uid
-      }).catch(console.error);
-    }
-  };
-
-  const handlePrevEpisode = () => {
-    if (playlistFiles.length > 0) {
-      const prevIndex = currentEpisodeIndex - 1;
-      if (prevIndex >= 0) {
-        loadSelectedEpisodeFile(playlistFiles[prevIndex], prevIndex, true);
-      }
-    } else {
-      const prevIndex = Math.max(0, (room?.currentEpisodeIndex || 0) - 1);
-      const roomRef = doc(db, 'rooms', roomId);
-      updateDoc(roomRef, {
-        currentEpisodeIndex: prevIndex,
-        currentEpisodeName: `Episode ${prevIndex + 1}`,
-        lastUpdatedAt: serverTimestamp(),
-        senderId: currentUser.uid
-      }).catch(console.error);
-    }
-  };
-
-  // Helper: Write room playback state changes to Firestore
-  const updateRoomState = async (playing: boolean, time: number) => {
-    if (!room) return;
-    
-    // Prevent syncing more frequently than every 250ms to limit rate limits
-    if (Date.now() - lastSyncTime.current < 250) return;
-    lastSyncTime.current = Date.now();
-
-    isUpdatingFirestore.current = true;
-    const roomRef = doc(db, 'rooms', roomId);
-    const path = `rooms/${roomId}`;
-
-    try {
-      await updateDoc(roomRef, {
-        isPlaying: playing,
-        currentTime: time,
-        lastUpdatedAt: serverTimestamp(),
-        senderId: currentUser.uid
-      });
-    } catch (fsErr) {
-      isUpdatingFirestore.current = false;
-      handleFirestoreError(fsErr, OperationType.UPDATE, path);
-    }
-  };
-
-  // Video Element event listeners
-  const handlePlay = () => {
-    setIsPlaying(true);
-    if (Date.now() - lastProgrammaticChangeTime.current < 1500) {
-      return;
-    }
-    updateRoomState(true, videoRef.current?.currentTime || 0);
-  };
-
-  const handlePause = () => {
-    setIsPlaying(false);
-    if (Date.now() - lastProgrammaticChangeTime.current < 1500) {
-      return;
-    }
-    updateRoomState(false, videoRef.current?.currentTime || 0);
-  };
-
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
-    }
-  };
-
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      setDuration(videoRef.current.duration);
-      
-      // Sync immediately on initial video load
-      if (room) {
-        lastProgrammaticChangeTime.current = Date.now();
-        let targetTime = room.currentTime;
-        
-        // Compensate for latency if already actively playing
-        if (room.isPlaying && room.lastUpdatedAt) {
-          let updateMs = 0;
-          if (room.lastUpdatedAt.toMillis) {
-            updateMs = room.lastUpdatedAt.toMillis();
-          } else if (room.lastUpdatedAt instanceof Date) {
-            updateMs = room.lastUpdatedAt.getTime();
-          } else {
-            updateMs = new Date(room.lastUpdatedAt).getTime();
-          }
-          const latencySeconds = (Date.now() - updateMs) / 1000;
-          if (latencySeconds > 0 && latencySeconds < 15) {
-            targetTime += latencySeconds;
-          }
-        }
-        
-        videoRef.current.currentTime = targetTime;
-        setCurrentTime(targetTime);
-        
-        if (room.isPlaying) {
-          videoRef.current.play().catch(e => console.log("Initial autoplay deferred: ", e));
-          setIsPlaying(true);
-        } else {
-          videoRef.current.pause();
-          setIsPlaying(false);
-        }
-      }
-    }
-  };
-
-  // Controls actions
-  const togglePlayPause = () => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    if (video.paused) {
-      video.play().catch(e => console.log(e));
-      setIsPlaying(true);
-      updateRoomState(true, video.currentTime);
-    } else {
-      video.pause();
-      setIsPlaying(false);
-      updateRoomState(false, video.currentTime);
-    }
-  };
-
-  // Skip playback forward/backward 5 seconds
-  const skip = (seconds: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    let target = video.currentTime + seconds;
-    if (target < 0) target = 0;
-    if (target > duration) target = duration;
-
-    video.currentTime = target;
-    setCurrentTime(target);
-    updateRoomState(isPlaying, target);
-  };
-
-  const handleTimelineChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const target = parseFloat(e.target.value);
-    video.currentTime = target;
-    setCurrentTime(target);
-    updateRoomState(isPlaying, target);
-  };
-
-  const toggleMute = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = !isMuted;
-    setIsMuted(!isMuted);
-  };
-
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const video = videoRef.current;
-    if (!video) return;
-    const val = parseFloat(e.target.value);
-    video.volume = val;
-    setVolume(val);
-    setIsMuted(val === 0);
-  };
-
-  // React Fast Reactions dispatcher
-  const sendReaction = async (emoji: string) => {
-    try {
-      const reactionsCol = collection(db, `rooms/${roomId}/reactions`);
-      await addDoc(reactionsCol, {
-        emoji,
-        senderId: currentUser.uid,
-        senderName: currentUser.name,
-        timestamp: serverTimestamp()
-      });
-    } catch (err) {
-      console.error("Failed to post reaction: ", err);
-    }
-  };
-
-  const triggerFloatingEmoji = (emoji: string, senderName: string) => {
-    const id = Math.random().toString(36).substring(2, 9);
-    const left = Math.floor(Math.random() * 80) + 10; // Scatter between 10% and 90%
-    
-    setFloatingEmojis(prev => [...prev, { id, emoji, senderName, left }]);
-    
-    // Auto remove emoji after animation ends (2.5 seconds)
-    setTimeout(() => {
-      setFloatingEmojis(prev => prev.filter(e => e.id !== id));
-    }, 2500);
-  };
-
-  const copyRoomLink = () => {
-    const link = `${window.location.origin}/?room=${roomId}`;
-    navigator.clipboard.writeText(link);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
-  };
-
-  const forceResync = () => {
-    if (!room) return;
-    const video = videoRef.current;
-    if (!video) return;
-    
-    lastProgrammaticChangeTime.current = Date.now();
-    let targetTime = room.currentTime;
-    if (room.isPlaying && room.lastUpdatedAt) {
-      let updateMs = 0;
-      if (room.lastUpdatedAt.toMillis) {
-        updateMs = room.lastUpdatedAt.toMillis();
-      } else if (room.lastUpdatedAt instanceof Date) {
-        updateMs = room.lastUpdatedAt.getTime();
-      } else {
-        updateMs = new Date(room.lastUpdatedAt).getTime();
-      }
-      const latencySeconds = (Date.now() - updateMs) / 1000;
-      if (latencySeconds > 0 && latencySeconds < 15) {
-        targetTime += latencySeconds;
-      }
-    }
-    
-    video.currentTime = targetTime;
-    setCurrentTime(targetTime);
-    
-    if (room.isPlaying) {
-      video.play().catch(e => console.log(e));
-      setIsPlaying(true);
-    } else {
-      video.pause();
-      setIsPlaying(false);
-    }
-  };
-
-  const formatTime = (time: number): string => {
-    const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-  };
-
-  // Render file picker if video is not selected yet
-  if (!videoUrl) {
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
+  if (roomError) {
     return (
-      <div className="max-w-xl mx-auto px-4 py-12 text-center font-sans">
-        <LiquidGlassCard intensity="glass" className="space-y-6 py-10">
-          
-          {room?.streamUrl && !room.streamUrl.startsWith('local://') ? (
-            <div className="p-4 bg-sky-500/10 border border-sky-400/30 rounded-2xl text-left space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-sky-300 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  Cloud Stream Ready
-                </span>
-                <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  Direct Play
-                </span>
-              </div>
-              <p className="text-white text-sm font-bold line-clamp-1">
-                {room.currentEpisodeName || room.videoName || 'Cloud Video'}
-              </p>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Stream directly without downloading, or pick your local copy below for <strong>Data Saver</strong> mode (0 MB consumed)!
-              </p>
-              <button
-                onClick={() => {
-                  userOptedLocalRef.current = false;
-                  setHybridMode('cloud');
-                  setVideoUrl(resolvePlayableStreamUrl(room.streamUrl!));
-                }}
-                className="w-full py-2.5 bg-gradient-to-r from-sky-400 to-indigo-500 hover:from-sky-300 hover:to-indigo-400 text-white rounded-xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-              >
-                <Play className="w-4 h-4 fill-current" />
-                Stream Cloud Video Now
-              </button>
-            </div>
-          ) : room?.streamUrl && room.streamUrl.startsWith('local://') ? (
-            <div className="p-4 bg-emerald-500/10 border border-emerald-400/30 rounded-2xl text-left space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-emerald-300 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  Local Device Movie (Data Saver Mode)
-                </span>
-                <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  0 MB Used
-                </span>
-              </div>
-              <p className="text-white text-sm font-bold line-clamp-1">
-                {room.streamUrl.replace('local://', '')}
-              </p>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                This movie is configured for local device playback. Select your local file below from this device to start synchronized playback!
-              </p>
-            </div>
-          ) : null}
-
-          <div 
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`border-2 border-dashed rounded-3xl p-8 transition-all duration-300 flex flex-col items-center justify-center gap-5 ${
-              isDragging 
-                ? 'border-sky-400 bg-sky-500/10 scale-[1.02] shadow-[0_0_25px_rgba(56,189,248,0.25)]' 
-                : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
-            }`}
-          >
-            <div className={`w-16 h-16 rounded-2xl bg-sky-500/10 flex items-center justify-center border border-sky-400/20 text-sky-400 transition-transform ${isDragging ? 'scale-110 animate-bounce' : 'animate-pulse'}`}>
-              <Video className="w-8 h-8" />
-            </div>
-
-            <div className="space-y-1.5">
-              <h3 className="text-lg font-bold text-white font-display">
-                {isDragging ? 'Drop Your Folder or Videos Here!' : (room?.streamUrl ? 'Or Use Local File (Data Saver)' : 'Select Anime Folder or Video File')}
-              </h3>
-              <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
-                {room?.streamUrl 
-                  ? 'Pick your local copy of this episode or series to stay in 100% sync while consuming 0 MB of cellular data!'
-                  : 'You can select an entire anime series folder or individual video files. Watch together without re-creating rooms for every episode!'
-                }
-              </p>
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-3 w-full max-w-sm pt-2">
-              <button
-                onClick={() => document.getElementById('local-folder-input')?.click()}
-                className="flex-1 px-4 py-2.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-              >
-                <Folder className="w-4 h-4" />
-                Select Entire Folder
-              </button>
-
-              <button
-                onClick={() => document.getElementById('local-files-input')?.click()}
-                className="flex-1 px-4 py-2.5 bg-white/10 hover:bg-white/15 border border-white/15 text-white rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-              >
-                <Video className="w-4 h-4 text-sky-400" />
-                Select Video File(s)
-              </button>
-            </div>
-
-            {/* Hidden File Inputs */}
-            <input 
-              id="local-folder-input"
-              type="file" 
-              // @ts-ignore - directory attributes supported in modern browsers
-              webkitdirectory=""
-              directory=""
-              multiple
-              accept="video/*" 
-              className="hidden" 
-              onChange={handleFileChange} 
-            />
-            <input 
-              id="local-files-input"
-              type="file" 
-              multiple
-              accept="video/*" 
-              className="hidden" 
-              onChange={handleFileChange} 
-            />
-          </div>
-
-          <p className="text-[11px] text-slate-400 max-w-sm mx-auto leading-relaxed">
-            To sync playback, all participants load their local copy of the folder or files. <strong>Penguin View</strong> coordinates playback, pauses, and next episodes seamlessly!
-          </p>
-
-          {room && (
-            <div className="p-3.5 bg-white/5 border border-white/10 rounded-2xl text-left space-y-1">
-              <p className="text-slate-500 text-[10px] uppercase font-mono tracking-wider">Suggested / Current Episode</p>
-              <p className="text-white text-xs font-semibold line-clamp-1">{room.currentEpisodeName || room.videoName || 'Any Video File'}</p>
-              <div className="flex items-center justify-between pt-1">
-                <span className="text-slate-400 text-[10px]">Host: {room.hostName}</span>
-                {activeMembers.length > 0 && (
-                  <span className="text-emerald-400 text-[10px] font-medium flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                    {activeMembers.length} member{activeMembers.length > 1 ? 's' : ''} in room
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="flex justify-center gap-3 pt-2 border-t border-white/5">
-            <button 
-              onClick={onLeave}
-              className="text-xs text-slate-500 hover:text-white transition-colors cursor-pointer"
-            >
-              Exit Room
-            </button>
-          </div>
-        </LiquidGlassCard>
+      <div className="min-h-[100dvh] flex items-center justify-center px-6 text-center">
+        <div className="max-w-sm space-y-4">
+          <WifiOff className="w-10 h-10 mx-auto text-rose-300" />
+          <p className="text-white font-semibold">{roomError}</p>
+          <button onClick={onLeave} className="h-12 px-6 rounded-2xl bg-white/10 border border-white/15 text-white font-bold active:scale-95 transition-all">
+            Back to home
+          </button>
+        </div>
       </div>
     );
   }
 
+  if (mode === 'none') {
+    return (
+      <SourceSetup
+        room={room}
+        loading={loading}
+        expectedLocalName={isLocalRoom ? room!.streamUrl!.replace('local://', '') : undefined}
+        onPickFiles={(files) => startLocal(files, isHost)}
+        onStreamCloud={() => room?.streamUrl && startCloud(room.streamUrl, !!room.isPlaying)}
+        onLeave={onLeave}
+      />
+    );
+  }
+
+  const driveId = room?.streamUrl ? getGoogleDriveId(room.streamUrl) : null;
+  const embedActive = state.activeKind === 'embed';
+  const showSpinner = !embedActive && state.status !== 'error' && (state.status === 'loading' || state.buffering);
+  const errorShown = state.status === 'error' && state.error;
+  const resumeLabel = formatSeconds(engine.getCurrentTime());
+
+  const stageClass = fullscreenLike
+    ? 'fixed inset-0 z-[60] bg-black'
+    : 'relative w-full aspect-video lg:aspect-auto lg:h-full bg-black';
+
   return (
-    <div className={`font-sans min-h-[60vh] sm:min-h-[90vh] flex flex-col justify-center py-2 sm:py-4 ${
-      isHalfScreen ? 'max-w-6xl mx-auto px-4 w-full' : 'fixed inset-0 z-50 bg-[#060911] justify-center py-0'
-    }`}>
-      {/* Sync Error Display */}
-      {roomError && (
-        <div className="max-w-md mx-auto p-4 text-center bg-rose-950/40 border border-rose-500/30 text-rose-300 rounded-2xl mb-4">
-          <p className="text-sm font-semibold">{roomError}</p>
-          <button onClick={onLeave} className="text-xs text-white underline mt-2 font-mono cursor-pointer">BACK TO DASHBOARD</button>
-        </div>
-      )}
-
-      {/* Main stage: Responsive Flex depending on screen configuration */}
-      <div className={`w-full flex flex-col gap-6 ${isHalfScreen ? 'lg:flex-row' : 'h-full flex-grow relative'}`}>
-        
-        {/* VIDEO CANVAS STAGE */}
-        <div 
-          ref={containerRef}
-          onMouseMove={handleUserActivity}
-          onClick={handleUserActivity}
-          className={`relative group bg-black overflow-hidden flex items-center justify-center select-none shadow-2xl transition-all duration-300 ${
-            isHalfScreen 
-              ? 'w-full lg:w-[70%] aspect-video rounded-[24px] border border-white/10' 
-              : 'w-full h-full flex-grow'
-          } ${!isHudVisible ? 'cursor-none' : ''}`}
+    <div className="fixed inset-0 z-30 bg-[#05070e] flex flex-col lg:flex-row" style={{ height: '100dvh' }}>
+      <div className={`${fullscreenLike ? '' : 'bg-black pt-[env(safe-area-inset-top)] lg:pt-0 lg:flex-1 lg:min-w-0 shrink-0'}`}>
+        <div
+          ref={stageRef}
+          className={`${stageClass} overflow-hidden select-none`}
+          style={{ touchAction: 'manipulation', WebkitTouchCallout: 'none', WebkitUserSelect: 'none' }}
+          onClick={onStageClick}
+          data-no-ptr
         >
-          {/* Real local HTML5 Video object or Google Drive Iframe Fallback */}
-          {useIframeFallback && getGoogleDriveId(room?.streamUrl || videoUrl) ? (
-            <div className="w-full h-full flex flex-col items-center justify-center bg-black relative">
-              <iframe
-                src={`https://drive.google.com/file/d/${getGoogleDriveId(room?.streamUrl || videoUrl)}/preview`}
-                className="w-full h-full border-0"
-                allow="autoplay; fullscreen"
-              />
-              <div className="absolute top-4 right-4 z-30 flex items-center gap-2">
-                <button
-                  onClick={() => setUseIframeFallback(false)}
-                  className="px-3 py-1.5 bg-black/70 hover:bg-black text-white text-xs font-semibold rounded-xl border border-white/20 backdrop-blur-md cursor-pointer transition-all shadow-lg flex items-center gap-1.5"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Return to Sync Player</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            <video
-              ref={videoRef}
-              src={videoUrl}
-              className="w-full h-full object-contain"
-              onPlay={handlePlay}
-              onPause={handlePause}
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleLoadedMetadata}
-              onEnded={handleNextEpisode}
-              onClick={togglePlayPause}
-              onError={() => {
-                const videoEl = videoRef.current;
-                const currentPos = videoEl?.currentTime || currentTime;
-                if (currentPos > 0) {
-                  setLastKnownTime(currentPos);
-                }
+          <video
+            ref={videoRef}
+            className={`absolute inset-0 w-full h-full object-contain bg-black ${embedActive ? 'invisible' : ''}`}
+            playsInline
+            preload="auto"
+          />
 
-                const driveId = getGoogleDriveId(room?.streamUrl || videoUrl);
-                const mediaErr = videoEl?.error;
-
-                if (mediaErr?.code === 3) {
-                  // If Archive.org video and not already using .ia.mp4, automatically switch to web-compatible .ia.mp4
-                  if (videoUrl.includes('archive.org') && !videoUrl.includes('.ia.mp4')) {
-                    const iaUrl = videoUrl.replace(/\.mp4(\?.*)?$/i, '.ia.mp4$1');
-                    setVideoUrl(iaUrl);
-                    setStreamLoadError('Original video used HEVC (H.265) which web browsers cannot decode. Automatically switching to Archive.org H.264 stream (.ia.mp4)...');
-                    setTimeout(() => {
-                      setStreamLoadError('');
-                      if (videoRef.current) {
-                        videoRef.current.load();
-                        videoRef.current.play().catch(() => {});
-                      }
-                    }, 1000);
-                    return;
-                  }
-                  setStreamLoadError(`Video decoding error at ${formatSeconds(currentPos)}. The file codec is unsupported or has a bad keyframe. Click "Switch to H.264 Web Stream" or "Skip +10s".`);
-                } else if (driveId) {
-                  setStreamLoadError(`Google Drive stream session timed out or reached download quota at ${formatSeconds(currentPos)}. Google limits simultaneous downloads and temporary session tokens (~60-75 min). Click "Reconnect & Resume" or "Switch to Drive Embed Player" to continue.`);
-                } else if (mediaErr?.code === 2) {
-                  setStreamLoadError(`Stream network connection interrupted at ${formatSeconds(currentPos)}. The host server dropped or timed out the connection.`);
-                } else if (mediaErr?.code === 4) {
-                  setStreamLoadError(`Video stream rejected or rate-limited by provider at ${formatSeconds(currentPos)}.`);
-                } else {
-                  setStreamLoadError(`Stream connection lost at ${formatSeconds(currentPos)}.`);
-                }
-              }}
-              playsInline
+          {embedActive && driveId && (
+            <iframe
+              src={driveEmbedUrl(driveId)}
+              title="Google Drive player"
+              className="absolute inset-0 w-full h-full border-0 z-10"
+              allow="autoplay; fullscreen; encrypted-media"
+              allowFullScreen
             />
           )}
 
-          {/* Stream Load Error Notice Banner with Instant Recovery */}
-          {streamLoadError && (
-            <div className="absolute top-4 left-4 right-4 z-50 p-4 bg-red-950/95 border border-red-500/50 rounded-2xl text-red-100 text-xs shadow-2xl backdrop-blur-xl animate-in fade-in duration-200 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2.5">
-                  <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <p className="font-bold text-white text-sm">
-                      Stream Interrupted at {formatSeconds(lastKnownTime || currentTime)}
-                    </p>
-                    <p className="text-red-300 text-xs leading-relaxed max-w-2xl">
-                      {streamLoadError}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setStreamLoadError('')}
-                  className="p-1 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-xs cursor-pointer"
-                >
-                  ✕
-                </button>
+          {/* Floating reactions */}
+          <div className="absolute inset-0 z-30 pointer-events-none overflow-hidden">
+            {floating.map((f) => (
+              <div key={f.id} className="absolute bottom-24 flex flex-col items-center animate-reaction" style={{ left: `${f.left}%` }}>
+                <span className={f.text.length > 4 ? 'px-3 py-1.5 rounded-2xl bg-black/60 border border-white/15 text-white text-sm font-semibold max-w-[60vw] text-center' : 'text-5xl drop-shadow-lg'}>
+                  {f.text}
+                </span>
+                <span className="text-[10px] text-white/80 mt-1 font-semibold drop-shadow">{f.name}</span>
               </div>
+            ))}
+          </div>
 
-              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-red-500/20">
-                {/* 1. Reconnect & Resume Button */}
-                <button
-                  onClick={handleReconnectStream}
-                  disabled={isReconnecting}
-                  className="px-3.5 py-1.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-sky-500/20 cursor-pointer transition-all active:scale-95"
-                >
-                  {isReconnecting ? (
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  )}
-                  <span>Reconnect & Resume at {formatSeconds(lastKnownTime || currentTime)}</span>
-                </button>
-
-                {/* 2. Skip Ahead 10s (Bypasses Corrupted Frame or Bad Keyframe) */}
-                <button
-                  onClick={() => {
-                    const skipTarget = (lastKnownTime || currentTime) + 10;
-                    setStreamLoadError('');
-                    const video = videoRef.current;
-                    if (video) {
-                      video.currentTime = skipTarget;
-                      setCurrentTime(skipTarget);
-                      video.play().catch(() => {});
-                    }
-                  }}
-                  className="px-3.5 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/40 text-purple-200 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
-                  title="Skips 10 seconds past a corrupted video packet, decode freeze, or bad keyframe"
-                >
-                  <SkipForward className="w-3.5 h-3.5 text-purple-400" />
-                  <span>Skip +10s Past Bad Frame</span>
-                </button>
-
-                {/* Switch between H.264 IA and Original for Archive.org streams */}
-                {(videoUrl.includes('archive.org') || (room?.streamUrl && room.streamUrl.includes('archive.org'))) && (
-                  <button
-                    onClick={() => {
-                      const active = videoUrl || room?.streamUrl || '';
-                      const targetUrl = active.includes('.ia.mp4')
-                        ? active.replace(/\.ia\.mp4/i, '.mp4')
-                        : active.replace(/\.mp4/i, '.ia.mp4');
-                      setStreamLoadError('');
-                      setVideoUrl(targetUrl);
-                      setTimeout(() => {
-                        if (videoRef.current) {
-                          videoRef.current.load();
-                          videoRef.current.play().catch(() => {});
-                        }
-                      }, 300);
-                    }}
-                    className="px-3.5 py-1.5 bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all active:scale-95"
-                    title="Switches to the universal H.264 web stream (.ia.mp4)"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Switch to {videoUrl.includes('.ia.mp4') ? 'Original (.mp4)' : 'H.264 Web Stream (.ia.mp4)'}</span>
-                  </button>
-                )}
-
-                {/* 2. Google Drive Embed Player (bypasses Google download quota) */}
-                {getGoogleDriveId(room?.streamUrl || videoUrl) && (
-                  <button
-                    onClick={() => {
-                      setUseIframeFallback(true);
-                      setStreamLoadError('');
-                    }}
-                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all active:scale-95"
-                    title="Bypasses Google Drive download bandwidth limits using Google's native player"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Switch to Drive Embed Player (Bypasses Quotas)</span>
-                  </button>
-                )}
-
-                {/* 3. Switch to Instant Local File */}
-                <label className="px-3.5 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 font-bold rounded-xl text-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95">
-                  <FolderOpen className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Sync with Local File (Zero Buffering)</span>
-                  <input
-                    type="file"
-                    accept="video/*,.mkv,.mp4,.avi,.mov,.webm"
-                    className="hidden"
-                    onChange={handleFileChange}
-                  />
-                </label>
+          {/* Double-tap feedback */}
+          {seekFlash && (
+            <div
+              key={seekFlash.key}
+              className={`absolute top-0 bottom-0 w-1/3 z-30 pointer-events-none flex items-center justify-center bg-white/10 animate-in fade-in duration-150 ${seekFlash.side === 'left' ? 'left-0 rounded-r-[100px]' : 'right-0 rounded-l-[100px]'}`}
+            >
+              <div className="text-white text-center">
+                <div className="text-2xl">{seekFlash.side === 'left' ? '⏪' : '⏩'}</div>
+                <div className="text-xs font-bold">10 seconds</div>
               </div>
             </div>
           )}
 
-          {/* FLOATING SOCIAL REACTIONS STAGE */}
-          <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
-            {floatingEmojis.map((e) => {
-              const isQuickComment = e.emoji.length > 2;
-              return (
-                <div
-                  key={e.id}
-                  className="absolute bottom-6 animate-reaction flex flex-col items-center"
-                  style={{ left: `${e.left}%` }}
-                >
-                  {isQuickComment ? (
-                    <div className="px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-sky-500/90 to-indigo-600/90 backdrop-blur-md text-white font-bold text-xs sm:text-sm shadow-2xl border border-white/30 flex items-center gap-1.5 whitespace-nowrap">
-                      <span>{e.emoji}</span>
-                    </div>
-                  ) : (
-                    <span className="text-4xl filter drop-shadow-[0_4px_8px_rgba(0,0,0,0.5)]">{e.emoji}</span>
+          {/* Embedded-player top bar (sync is off) */}
+          {embedActive && (
+            <div className="absolute top-0 inset-x-0 z-30 flex items-center gap-2 px-3 pt-[max(env(safe-area-inset-top),8px)] pb-6 bg-gradient-to-b from-black/80 to-transparent" onClick={(e) => e.stopPropagation()}>
+              <button onClick={onLeave} className="h-10 px-3 rounded-full bg-white/10 text-white text-xs font-bold active:scale-95">Leave</button>
+              <span className="flex-1 text-[11px] text-amber-200 truncate">Drive player: playback is not synced</span>
+              <button onClick={() => engine.selectSource(0)} className="h-10 px-3 rounded-full bg-sky-500/80 text-white text-xs font-bold active:scale-95">Back to synced</button>
+            </div>
+          )}
+
+          {/* Buffering */}
+          {showSpinner && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 pointer-events-none">
+              <Loader2 className="w-10 h-10 text-white/90 animate-spin" />
+              {state.reconnecting && <p className="text-xs text-white/80 font-semibold bg-black/50 px-3 py-1 rounded-full">Reconnecting…</p>}
+            </div>
+          )}
+
+          {/* Tap to start (phones block autoplay until a real tap) */}
+          {state.needsGesture && !errorShown && !embedActive && (
+            <button
+              onClick={(e) => { e.stopPropagation(); haptic(14); void engine.play('remote').then(resync); }}
+              className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-black/55 backdrop-blur-[2px] animate-in fade-in duration-150"
+            >
+              <span className="w-20 h-20 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center shadow-2xl shadow-sky-500/40 active:scale-90 transition-transform">
+                <Play className="w-9 h-9 text-white fill-current ml-1" />
+              </span>
+              <span className="text-white font-bold text-sm">Tap to join the movie</span>
+            </button>
+          )}
+
+          {/* Errors with real recovery options */}
+          {errorShown && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <div className="w-full max-w-sm space-y-3 text-center">
+                <AlertTriangle className="w-9 h-9 mx-auto text-amber-400" />
+                <p className="text-white font-bold text-base leading-snug">{state.error!.message}</p>
+                {state.error!.hint && <p className="text-slate-300 text-xs leading-relaxed">{state.error!.hint}</p>}
+                <div className="grid gap-2 pt-1">
+                  <button onClick={() => engine.retry()} className="h-12 rounded-2xl bg-gradient-to-r from-sky-400 to-indigo-500 text-white font-bold text-sm flex items-center justify-center gap-2 active:scale-95">
+                    <RefreshCw className="w-4 h-4" /> Retry from {resumeLabel}
+                  </button>
+                  {state.candidates.length > 1 && (
+                    <button onClick={() => engine.tryNextSource()} className="h-12 rounded-2xl bg-white/10 border border-white/15 text-white font-semibold text-sm flex items-center justify-center gap-2 active:scale-95">
+                      <RotateCcw className="w-4 h-4" /> Try another source
+                    </button>
                   )}
-                  <span className="text-[10px] font-semibold text-white/95 px-2 py-0.5 rounded-full bg-black/70 backdrop-blur-md border border-white/10 mt-1 whitespace-nowrap shadow-md">
-                    {e.senderName}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* LIQUID GLASS CUSTOM PLAYER HUD OVERLAY */}
-          <div className={`absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/60 flex flex-col justify-between p-4 md:p-6 transition-opacity duration-300 z-40 ${
-            isHudVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'
-          }`}>
-            
-            {/* HUD Top Bar */}
-            <div className="flex items-center justify-between gap-2">
-              <button
-                onClick={onLeave}
-                className="p-2 bg-white/10 hover:bg-white/20 border border-white/10 rounded-xl text-white transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold backdrop-blur-md"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                <span className="hidden sm:inline">Back</span>
-              </button>
-
-              <div className="flex items-center gap-2">
-                <div className="px-2.5 py-1.5 bg-black/40 border border-white/10 rounded-xl flex items-center gap-1.5 backdrop-blur-md text-[11px] sm:text-xs">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                  <span className="text-slate-200 font-medium">Room: {roomId.slice(0, 6)}</span>
-                </div>
-
-                {/* Active Members Count Badge */}
-                {activeMembers.length > 0 && (
-                  <div className="px-2.5 py-1.5 bg-white/10 border border-white/10 rounded-xl flex items-center gap-1.5 backdrop-blur-md text-[11px] sm:text-xs text-sky-300">
-                    <Users className="w-3.5 h-3.5 text-sky-400" />
-                    <span>{activeMembers.length} Online</span>
-                  </div>
-                )}
-
-                {/* Hybrid Sync Cloud vs Local Data Saver Toggle */}
-                {room?.streamUrl && (
-                  <button
-                    onClick={() => {
-                      if (hybridMode === 'cloud') {
-                        document.getElementById('hud-local-file-input')?.click();
-                      } else {
-                        userOptedLocalRef.current = false;
-                        setHybridMode('cloud');
-                        setVideoFile(null);
-                        setVideoUrl(resolvePlayableStreamUrl(room.streamUrl!));
-                      }
-                    }}
-                    className={`px-2.5 py-1.5 border rounded-xl flex items-center gap-1.5 backdrop-blur-md text-[10px] sm:text-xs font-semibold cursor-pointer transition-all ${
-                      hybridMode === 'local' 
-                        ? 'bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/40 text-emerald-300' 
-                        : 'bg-sky-500/20 hover:bg-sky-500/30 border-sky-400/40 text-sky-200'
-                    }`}
-                    title={hybridMode === 'local' ? 'Data Saver Active (0 MB used). Tap to switch to Cloud Stream.' : 'Streaming from Cloud. Tap to pick a local file to save data.'}
-                  >
-                    {hybridMode === 'local' ? (
-                      <>
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        <span>💾 Data Saver (0 MB)</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-ping" />
-                        <span>☁️ Cloud Stream</span>
-                      </>
-                    )}
+                  <button onClick={() => addFilesInput.current?.click()} className="h-12 rounded-2xl bg-white/10 border border-white/15 text-white font-semibold text-sm flex items-center justify-center gap-2 active:scale-95">
+                    <HardDrive className="w-4 h-4" /> Play a file from this device
                   </button>
-                )}
-                {getGoogleDriveId(room?.streamUrl || videoUrl) && (
-                  <button
-                    onClick={() => setUseIframeFallback(prev => !prev)}
-                    className="px-2.5 py-1.5 border border-amber-400/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded-xl flex items-center gap-1.5 backdrop-blur-md text-[10px] sm:text-xs font-semibold cursor-pointer transition-all"
-                    title="Switch between Sync Video Player and Google Drive Embed Player"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>{useIframeFallback ? 'Synced Player' : 'Drive Embed'}</span>
-                  </button>
-                )}
-                <input 
-                  id="hud-local-file-input" 
-                  type="file" 
-                  accept="video/*" 
-                  className="hidden" 
-                  onChange={handleFileChange} 
-                />
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setIsShareModalOpen(true)}
-                  className="p-2 bg-gradient-to-r from-sky-500/30 to-indigo-500/30 hover:from-sky-500/40 hover:to-indigo-500/40 border border-sky-400/40 rounded-xl text-white transition-all cursor-pointer flex items-center gap-1.5 text-xs font-semibold backdrop-blur-md shadow-lg shadow-sky-500/10"
-                  title="Invite friends from your friend list or copy link"
-                >
-                  <Share2 className="w-4 h-4 text-sky-300" />
-                  <span className="hidden sm:inline">Invite & Share</span>
-                </button>
+                  {driveId && (
+                    <a href={`https://drive.google.com/file/d/${driveId}/view`} target="_blank" rel="noreferrer" className="h-11 rounded-2xl text-sky-300 text-xs font-semibold flex items-center justify-center gap-1.5">
+                      <ExternalLink className="w-3.5 h-3.5" /> Open in Google Drive
+                    </a>
+                  )}
+                  <button onClick={onLeave} className="h-10 text-slate-400 text-xs font-semibold">Leave room</button>
+                </div>
               </div>
             </div>
+          )}
 
-            {/* HUD Central / Bottom Fast Reactions panel */}
-            <div className="flex flex-col items-center gap-3">
-              
-              {/* Quick Comments Overlay Menu Popup */}
-              {isCommentsMenuOpen && (
-                <div 
-                  className="p-3 bg-slate-900/90 border border-white/20 rounded-2xl shadow-2xl backdrop-blur-xl animate-fade-in max-w-md w-full grid grid-cols-2 gap-2 text-left"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <div className="col-span-2 flex items-center justify-between border-b border-white/10 pb-1.5 mb-1">
-                    <span className="text-[11px] font-bold text-sky-400 flex items-center gap-1">
-                      <MessageSquare className="w-3.5 h-3.5" /> Quick Comments
-                    </span>
-                    <button 
-                      onClick={() => setIsCommentsMenuOpen(false)}
-                      className="text-[10px] text-slate-400 hover:text-white"
-                    >
-                      Close ✕
-                    </button>
-                  </div>
-                  {QUICK_COMMENTS.map((phrase) => (
-                    <button
-                      key={phrase}
-                      onClick={() => {
-                        sendReaction(phrase);
-                        setIsCommentsMenuOpen(false);
-                      }}
-                      className="px-2.5 py-1.5 bg-white/5 hover:bg-sky-500/20 border border-white/10 hover:border-sky-400/40 rounded-xl text-xs text-white text-left font-medium transition-all hover:scale-[1.02] cursor-pointer"
-                    >
-                      {phrase}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Emojis & Quick Comments Selector Bar */}
-              <div 
-                className="flex items-center gap-1 sm:gap-2 p-1.5 sm:p-2 bg-white/10 border border-white/15 rounded-2xl shadow-2xl backdrop-blur-xl animate-fade-in max-w-full overflow-x-auto"
-                style={{ borderRadius: '20px' }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* 💬 Quick Comment Popup Button */}
-                <button
-                  onClick={() => setIsCommentsMenuOpen(!isCommentsMenuOpen)}
-                  className={`px-3 py-1.5 sm:py-2 rounded-xl border text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
-                    isCommentsMenuOpen 
-                      ? 'bg-sky-500 text-white border-sky-400 scale-105' 
-                      : 'bg-white/10 hover:bg-white/20 border-white/15 text-sky-300'
-                  }`}
-                  title="Open quick comments menu"
-                >
-                  <MessageSquare className="w-4 h-4 text-sky-400" />
-                  <span className="hidden sm:inline">Comments</span>
-                </button>
-
-                <div className="w-[1px] h-6 bg-white/15 mx-0.5" />
-
-                {['🤣', '👀', '😱', '🫢', '💕', '🔥', '🍿', '🐧', '🐰'].map((emoji) => (
-                  <button
-                    key={emoji}
-                    onClick={() => sendReaction(emoji)}
-                    className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center text-xl sm:text-2xl hover:scale-125 active:scale-95 transition-all cursor-pointer hover:rotate-3"
-                  >
-                    {emoji}
-                  </button>
-                ))}
+          {/* Toasts */}
+          <div className="absolute top-[max(env(safe-area-inset-top),56px)] inset-x-3 z-50 flex flex-col items-center gap-2 pointer-events-none">
+            {state.notice && <div className="px-3.5 py-2 rounded-2xl bg-black/75 border border-white/15 text-white text-xs font-medium text-center backdrop-blur-md animate-in fade-in slide-in-from-top-2 max-w-md">{state.notice}</div>}
+            {syncWarning && <div className="px-3.5 py-2 rounded-2xl bg-amber-950/85 border border-amber-500/40 text-amber-100 text-xs text-center backdrop-blur-md max-w-md">{syncWarning}</div>}
+            {localNotice && (
+              <div className="pointer-events-auto px-3.5 py-2 rounded-2xl bg-amber-950/85 border border-amber-500/40 text-amber-100 text-xs text-center backdrop-blur-md max-w-md flex items-start gap-2" onClick={(e) => { e.stopPropagation(); setLocalNotice(''); }}>
+                <span>{localNotice}</span><span className="opacity-60">✕</span>
               </div>
-              
-              {/* HUD Control Console (Scrubber + Playback commands) */}
-              <div 
-                className="w-full max-w-2xl bg-white/5 border border-white/15 p-3.5 sm:p-4 flex flex-col gap-3 backdrop-blur-xl shadow-2xl"
-                style={{ borderRadius: '20px' }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                
-                {/* Custom Seek Scrubber */}
-                <div className="flex items-center gap-3">
-                  <span className="text-[10px] font-mono text-slate-300 font-medium min-w-[32px]">
-                    {formatTime(currentTime)}
-                  </span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={duration || 100}
-                    value={currentTime}
-                    onChange={handleTimelineChange}
-                    className="flex-grow accent-sky-400 cursor-pointer h-1.5 rounded-full bg-white/20 hover:bg-white/30"
-                  />
-                  <span className="text-[10px] font-mono text-slate-300 font-medium min-w-[32px]">
-                    {formatTime(duration)}
-                  </span>
-                </div>
-
-                {/* Console Bottom Action Row */}
-                <div className="flex flex-wrap items-center justify-between gap-y-3 gap-x-2">
-                  {/* Left Side: Navigation Controls + Episode Switchers */}
-                  <div className="flex items-center gap-1 sm:gap-2">
-                    <button
-                      onClick={handlePrevEpisode}
-                      className="p-1.5 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title="Previous Episode"
-                    >
-                      <SkipBack className="w-5 h-5 text-indigo-400" />
-                    </button>
-
-                    <button
-                      onClick={() => skip(-5)}
-                      className="p-1.5 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title="Jump 5s back"
-                    >
-                      <RotateCcw className="w-5 h-5 text-sky-400" />
-                    </button>
-
-                    <button
-                      onClick={togglePlayPause}
-                      className="w-10 h-10 rounded-full bg-white text-slate-950 flex items-center justify-center hover:scale-105 active:scale-95 cursor-pointer shadow-lg transition-transform"
-                    >
-                      {isPlaying ? (
-                        <Pause className="w-5 h-5 fill-black" />
-                      ) : (
-                        <Play className="w-5 h-5 fill-black ml-0.5" />
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => skip(5)}
-                      className="p-1.5 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title="Jump 5s forward"
-                      style={{ transform: 'scaleX(-1)' }}
-                    >
-                      <RotateCcw className="w-5 h-5 text-sky-400" />
-                    </button>
-
-                    <button
-                      onClick={handleNextEpisode}
-                      className="p-1.5 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                      title="Next Episode"
-                    >
-                      <SkipForward className="w-5 h-5 text-indigo-400" />
-                    </button>
-                  </div>
-
-                  {/* Middle Side: Audio */}
-                  <div className="hidden sm:flex items-center gap-2 max-w-[120px]">
-                    <button onClick={toggleMute} className="text-slate-300 hover:text-white cursor-pointer">
-                      {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4" />}
-                    </button>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={isMuted ? 0 : volume}
-                      onChange={handleVolumeChange}
-                      className="w-16 accent-white cursor-pointer h-1 rounded-full bg-white/20"
-                    />
-                  </div>
-
-                  {/* Right Side: Options & Fullscreen controls */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={forceResync}
-                      className="p-2 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 text-xs text-sky-300 flex items-center gap-1 cursor-pointer"
-                      title="Sync playback timeline now"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Resync</span>
-                    </button>
-
-                    <button
-                      onClick={() => setIsHalfScreen(!isHalfScreen)}
-                      className="p-2 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10 text-xs text-slate-200 flex items-center gap-1 cursor-pointer"
-                      title="Toggle Theater / Half view layout"
-                    >
-                      {isHalfScreen ? (
-                        <>
-                          <Tv className="w-3.5 h-3.5 text-indigo-300" />
-                          <span className="hidden sm:inline">Theater View</span>
-                        </>
-                      ) : (
-                        <>
-                          <Minimize className="w-3.5 h-3.5 text-indigo-300" />
-                          <span className="hidden sm:inline">Half View</span>
-                        </>
-                      )}
-                    </button>
-
-                    {/* True Native Fullscreen Button (Hides browser tabs & taskbar) */}
-                    <button
-                      onClick={toggleNativeFullscreen}
-                      className="p-2 bg-gradient-to-r from-indigo-600 to-sky-500 hover:from-indigo-500 hover:to-sky-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-sky-500/20"
-                      title="Full Screen Mode (Hides all browser tabs & menus for cinema immersion - Key: F)"
-                    >
-                      {isNativeFullscreen ? (
-                        <>
-                          <Minimize className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Exit Full Screen</span>
-                        </>
-                      ) : (
-                        <>
-                          <Maximize className="w-3.5 h-3.5" />
-                          <span className="hidden sm:inline">Full Screen</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
+            )}
+            {!state.hasVideoTrack && !embedActive && (
+              <div className="px-3.5 py-2 rounded-2xl bg-rose-950/85 border border-rose-500/40 text-rose-100 text-xs text-center backdrop-blur-md max-w-md">
+                Sound only: this phone could not decode the picture. Try another source.
               </div>
-            </div>
-
+            )}
           </div>
 
+          {!embedActive && !errorShown && (
+            <PlayerControls
+              engine={engine}
+              state={state}
+              visible={controlsVisible && !state.needsGesture}
+              title={title}
+              subtitle={episodeItems.length > 1 ? `Episode ${activeEpisode + 1} of ${episodeItems.length}` : room?.hostName ? `Hosted by ${room.hostName}` : undefined}
+              memberCount={members.length || 1}
+              isFullscreen={fullscreenLike}
+              compact={narrow && !fullscreenLike}
+              showVolume={supportsVolumeControl()}
+              canPrev={canPrev}
+              canNext={canNext}
+              hasMultipleSources={state.candidates.length > 1 || mode === 'local' || hasCloud}
+              onBack={onLeave}
+              onShare={() => setShareOpen(true)}
+              onToggleFullscreen={toggleFullscreen}
+              onPrev={goPrev}
+              onNext={goNext}
+              onResync={() => { resync(); showControls(); }}
+              onOpenSource={() => setSourceOpen(true)}
+              onReact={(e) => { void sendReaction(e); showControls(); }}
+              onOpenMembers={() => setPeopleOpen(true)}
+              onInteract={showControls}
+              onScrubChange={setScrubbing}
+            />
+          )}
         </div>
-
-        {/* SIDE BAR / EPISODES & ACTIVE MEMBERS MODULE (Visible in half screen play mode) */}
-        {isHalfScreen && (
-          <div className="w-full lg:w-[30%] flex flex-col gap-4">
-            <LiquidGlassCard intensity="glass" className="h-full flex flex-col justify-between p-5 space-y-5">
-              
-              {/* Top Section: Active Members in Room */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
-                  <span className="text-[10px] font-bold font-mono text-emerald-400 uppercase tracking-widest flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                    ONLINE MEMBERS ({activeMembers.length})
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
-                  {activeMembers.map((m) => (
-                    <div 
-                      key={m.uid}
-                      className="px-2.5 py-1.5 bg-white/5 border border-white/10 rounded-xl flex items-center gap-2 text-xs font-medium text-white"
-                    >
-                      {m.profilePic && m.profilePic.startsWith('data:image/') ? (
-                        <img src={m.profilePic} alt={m.name} className="w-5 h-5 rounded-full object-cover border border-white/20" />
-                      ) : (
-                        <span className="text-sm">{m.profilePic || '🐧'}</span>
-                      )}
-                      <span className="line-clamp-1">{m.name}</span>
-                      {m.uid === room?.hostId && (
-                        <span className="text-[9px] px-1 bg-sky-500/20 text-sky-300 rounded font-mono">HOST</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Middle Section: Playlist / Episodes inside Room */}
-              <div className="space-y-3 flex-grow overflow-hidden flex flex-col">
-                <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
-                  <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5 uppercase font-mono tracking-wider">
-                    <ListVideo className="w-4 h-4 text-sky-400" />
-                    Episode Playlist ({playlistFiles.length > 0 ? playlistFiles.length : (room?.totalEpisodesCount || 1)})
-                  </h4>
-
-                  <button
-                    onClick={() => document.getElementById('sidebar-folder-input')?.click()}
-                    className="text-[10px] text-sky-400 hover:text-sky-300 font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    <FolderPlus className="w-3.5 h-3.5" />
-                    Add Folder
-                  </button>
-
-                  <input 
-                    id="sidebar-folder-input"
-                    type="file" 
-                    // @ts-ignore
-                    webkitdirectory=""
-                    directory=""
-                    multiple
-                    accept="video/*" 
-                    className="hidden" 
-                    onChange={handleFileChange} 
-                  />
-                </div>
-
-                {/* Playlist Files List */}
-                <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-                  {playlistFiles.length > 0 ? (
-                    playlistFiles.map((f, idx) => {
-                      const isCurrent = idx === currentEpisodeIndex;
-                      return (
-                        <button
-                          key={f.name + idx}
-                          onClick={() => loadSelectedEpisodeFile(f, idx, true)}
-                          className={`w-full text-left p-2.5 rounded-xl border text-xs transition-all flex items-center justify-between gap-2 cursor-pointer ${
-                            isCurrent
-                              ? 'bg-sky-500/20 border-sky-400/50 text-white font-bold shadow-md'
-                              : 'bg-white/[0.03] hover:bg-white/10 border-white/5 text-slate-300'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 overflow-hidden">
-                            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${isCurrent ? 'bg-sky-400 text-black font-bold' : 'bg-white/10 text-slate-400'}`}>
-                              {idx + 1}
-                            </span>
-                            <span className="line-clamp-1">{f.name}</span>
-                          </div>
-                          {isCurrent && (
-                            <span className="text-[10px] font-mono text-sky-400 animate-pulse font-bold">PLAYING</span>
-                          )}
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <div className="p-3 bg-white/[0.02] border border-white/5 rounded-xl text-center space-y-2">
-                      <p className="text-xs text-slate-300 font-medium line-clamp-1">
-                        Currently: {room?.currentEpisodeName || room?.videoName || 'Episode 1'}
-                      </p>
-                      <p className="text-[11px] text-slate-400">
-                        Load your local anime/movie folder to enable one-click episode switching for everyone!
-                      </p>
-                      <button
-                        onClick={() => document.getElementById('sidebar-folder-input')?.click()}
-                        className="w-full py-2 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/30 text-sky-300 rounded-xl text-xs font-semibold transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                      >
-                        <Folder className="w-3.5 h-3.5" />
-                        Select Local Folder
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Bottom Session Details & Invite Friends Trigger */}
-              <div className="border-t border-white/10 pt-3 space-y-2">
-                <div className="p-3 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-between">
-                  <div>
-                    <p className="text-[10px] font-mono text-slate-500 uppercase">ROOM CODE</p>
-                    <p className="text-xs font-mono text-white font-bold mt-0.5">{roomId.slice(0, 8).toUpperCase()}</p>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={copyRoomLink}
-                      className="p-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl text-xs transition-colors cursor-pointer"
-                      title="Quick copy link"
-                    >
-                      {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Share2 className="w-3.5 h-3.5" />}
-                    </button>
-                    <button
-                      onClick={() => setIsShareModalOpen(true)}
-                      className="px-3 py-1.5 bg-gradient-to-r from-sky-400 to-indigo-500 hover:from-sky-300 hover:to-indigo-400 text-white font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer"
-                    >
-                      Invite Friends
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-            </LiquidGlassCard>
-          </div>
-        )}
-
       </div>
 
-      {/* Share & Invite Friends Modal */}
+      {/* Side / lower panel (hidden in fullscreen & landscape phones) */}
+      {!fullscreenLike && (
+        <aside className="flex-1 min-h-0 lg:flex-none lg:w-[380px] border-t lg:border-t-0 lg:border-l border-white/10 bg-[#0a0f1c]/90 flex flex-col pb-[env(safe-area-inset-bottom)]">
+          <div className="px-4 pt-3 pb-1">
+            <h1 className="text-base font-extrabold text-white font-display leading-snug line-clamp-2">{title}</h1>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              {members.length || 1} watching · {mode === 'local' ? 'playing from this device' : 'streaming'}
+              {isMobile && mode === 'local' ? ' · 0 MB data' : ''}
+            </p>
+          </div>
+          {narrow && (
+            <ActionBar
+              muted={state.muted || state.volume === 0}
+              canPrev={canPrev}
+              canNext={canNext}
+              onPrev={goPrev}
+              onNext={goNext}
+              onToggleMute={() => engine.setMuted(!state.muted)}
+              onResync={() => { resync(); showControls(); }}
+              onOpenSource={() => setSourceOpen(true)}
+              onShare={() => setShareOpen(true)}
+            />
+          )}
+          <RoomPanel
+            roomId={roomId}
+            room={room}
+            members={members}
+            currentUserId={currentUser.uid}
+            episodes={episodeItems}
+            activeEpisode={activeEpisode}
+            onSelectEpisode={selectEpisode}
+            onAddFiles={() => addFilesInput.current?.click()}
+            onReact={(t) => { void sendReaction(t); }}
+            onShare={() => setShareOpen(true)}
+          />
+        </aside>
+      )}
+
+      {/* Source sheet */}
+      <BottomSheet open={sourceOpen} onClose={() => setSourceOpen(false)} title="Video source">
+        {state.candidates.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-[11px] uppercase font-mono tracking-wider text-slate-500">Cloud streams</p>
+            {state.candidates.map((c, i) => (
+              <button
+                key={c.url}
+                onClick={() => { engine.selectSource(i); setSourceOpen(false); }}
+                className={`w-full text-left px-4 h-12 rounded-2xl border flex items-center justify-between active:scale-[0.99] transition-all ${
+                  i === state.candidateIndex && mode === 'cloud' ? 'bg-sky-500/15 border-sky-400/40 text-white' : 'bg-white/[0.04] border-white/10 text-slate-200'
+                }`}
+              >
+                <span className="text-sm font-semibold">{c.label}</span>
+                {i === state.candidateIndex && mode === 'cloud' && <span className="text-[10px] font-mono uppercase text-sky-300">Playing</span>}
+              </button>
+            ))}
+          </div>
+        )}
+        {hasCloud && mode === 'local' && (
+          <button onClick={() => { setSourceOpen(false); startCloud(room!.streamUrl!, !engine.isPaused()); }} className="w-full h-12 rounded-2xl bg-white/8 border border-white/15 text-white text-sm font-semibold active:scale-95">
+            Switch back to cloud stream
+          </button>
+        )}
+        <button onClick={() => { setSourceOpen(false); addFilesInput.current?.click(); }} className="w-full h-12 rounded-2xl bg-white/8 border border-white/15 text-white text-sm font-semibold flex items-center justify-center gap-2 active:scale-95">
+          <HardDrive className="w-4 h-4 text-sky-300" /> Play a file from this device (0 MB data)
+        </button>
+        <p className="text-[11px] text-slate-500 leading-relaxed">If a source stutters or shows no picture, try another one. Playback resumes where you were.</p>
+      </BottomSheet>
+
+      {/* People sheet (opened from the player's member badge) */}
+      <BottomSheet open={peopleOpen} onClose={() => setPeopleOpen(false)} title={`Watching now (${members.length || 1})`}>
+        <ul className="space-y-1.5">
+          {members.map((m) => (
+            <li key={m.uid} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl bg-white/[0.04] border border-white/5">
+              <span className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center text-lg overflow-hidden">
+                {m.profilePic && m.profilePic.startsWith('data:image/') ? <img src={m.profilePic} alt="" className="w-full h-full object-cover" /> : m.profilePic || '🐧'}
+              </span>
+              <span className="text-sm font-semibold text-white flex-1 truncate">{m.name}{m.uid === currentUser.uid ? ' (you)' : ''}</span>
+              {room?.hostId === m.uid && <span className="text-[10px] font-mono uppercase text-amber-300">Host</span>}
+            </li>
+          ))}
+        </ul>
+        <button onClick={() => { setPeopleOpen(false); setShareOpen(true); }} className="w-full h-12 rounded-2xl bg-gradient-to-r from-sky-500 to-indigo-600 text-white text-sm font-bold active:scale-95">Invite friends</button>
+      </BottomSheet>
+
       <ShareInviteModal
-        isOpen={isShareModalOpen}
-        onClose={() => setIsShareModalOpen(false)}
+        isOpen={shareOpen}
+        onClose={() => setShareOpen(false)}
         roomId={roomId}
-        videoTitle={room?.currentEpisodeName || room?.videoName || videoFile?.name || 'Sync Movie Watch'}
+        videoTitle={title}
         currentUser={currentUser}
-        friendsProfiles={friendsProfiles}
+        friendsProfiles={friends}
+      />
+
+      {/* One hidden picker for "add / replace with a file from this device" */}
+      <input
+        ref={addFilesInput}
+        type="file"
+        multiple
+        accept={VIDEO_ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          const files = Array.from(e.target.files || []);
+          e.target.value = '';
+          if (!files.length) return;
+          if (mode === 'local') addFiles(files);
+          else startLocal(files, false);
+        }}
       />
     </div>
   );
